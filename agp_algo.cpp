@@ -812,11 +812,11 @@ static __declspec(noalias) void agp_run_branch_mpi(
 					float gpen = 0.0f;
 					{
 						const float ai = fabsf(q_local[i]);
-						const float v = fmaf(cost.minTheta, 1.0f, -ai);
+						const float v = ai - cost.minTheta;
 						if (v > 0.0f) {
 							const float scale = fmaf(cost.minTheta, 1.0f, 1e-6f);
 							const float e = exp2f(fmaf(2.0f / scale, v, 0.0f));
-							const float dpen_dtheta = cost.sharpW * fmaf(e, fmaf(0.69314718055994530941723212145818f, 2.0f / scale, 0.0f), 0.0f) * (-copysignf(1.0f, q_local[i]));
+							const float dpen_dtheta = cost.sharpW * fmaf(e, fmaf(0.69314718055994530941723212145818f, 2.0f / scale, 0.0f), 0.0f) * (copysignf(1.0f, q_local[i]));
 							gpen = fmaf(dpen_dtheta, 1.0f, gpen);
 						}
 					}

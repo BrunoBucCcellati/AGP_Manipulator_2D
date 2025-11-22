@@ -581,7 +581,7 @@ __declspec(align(16)) struct ManipCost final {
 #pragma loop ivdep
 		while (i < n) {
 			const float ai = fabsf(th[i]);
-			const float v = minTheta - ai;
+			const float v = ai - minTheta;
 			if (v > 0.0f) {
 				const float scale = 2.0f / (minTheta + 1e-6f);
 				penC += sharpW * (exp2f(scale * v) - 1.0f);

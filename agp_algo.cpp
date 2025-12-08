@@ -1,117 +1,117 @@
 #include "pch.h"
 
 #define XOR_RAND(state, result_var) \
-  do { \
-    unsigned s = (state); \
-    s ^= s << 13; \
-    s ^= s >> 17; \
-    s ^= s << 5; \
-    (state) = s; \
-    float tmp = (float)((double)(s) * (1.0/4294967296.0)); \
-    result_var = tmp; \
-  } while (0)
+    do { \
+        unsigned s = (state); \
+        s ^= s << 13; \
+        s ^= s >> 17; \
+        s ^= s << 5; \
+        (state) = s; \
+        float tmp = (float)((double)(s) * (1.0/4294967296.0)); \
+        result_var = tmp; \
+    } while (0)
 
 #define XOR_RAND_GRSH(state, result_var) \
-  do { \
-    unsigned s = (state); \
-    s ^= s << 13; \
-    s ^= s >> 17; \
-    s ^= s << 5; \
-    (state) = s; \
-    result_var = fmaf((float)(int)s, 0x1.0p-31f, -1.0f); \
-  } while (0)
+    do { \
+        unsigned s = (state); \
+        s ^= s << 13; \
+        s ^= s >> 17; \
+        s ^= s << 5; \
+        (state) = s; \
+        result_var = fmaf((float)(int)s, 0x1.0p-31f, -1.0f); \
+    } while (0)
 
 #define FABE13_COS(x, result_var) \
-  do { \
-    const float _ax_ = fabsf(x); \
-    float _r_ = fmodf(_ax_, 6.28318530718f); \
-    if (_r_ > 3.14159265359f) \
-      _r_ = 6.28318530718f - _r_; \
-    if (_r_ < 1.57079632679f) { \
-      const float _t2_ = _r_ * _r_; \
-      const float _t4_ = _t2_ * _t2_; \
-      result_var = fmaf(_t4_, fmaf(_t2_, -0.0013888889f, 0.0416666667f), fmaf(_t2_, -0.5f, 1.0f)); \
-    } else { \
-      _r_ = 3.14159265359f - _r_; \
-      const float _t2_ = _r_ * _r_; \
-      const float _t4_ = _t2_ * _t2_; \
-      result_var = -fmaf(_t4_, fmaf(_t2_, -0.0013888889f, 0.0416666667f), fmaf(_t2_, -0.5f, 1.0f)); \
-    } \
-  } while (0)
+    do { \
+        const float _ax_ = fabsf(x); \
+        float _r_ = fmodf(_ax_, 6.28318530718f); \
+        if (_r_ > 3.14159265359f) \
+            _r_ = 6.28318530718f - _r_; \
+        if (_r_ < 1.57079632679f) { \
+            const float _t2_ = _r_ * _r_; \
+            const float _t4_ = _t2_ * _t2_; \
+            result_var = fmaf(_t4_, fmaf(_t2_, -0.0013888889f, 0.0416666667f), fmaf(_t2_, -0.5f, 1.0f)); \
+        } else { \
+            _r_ = 3.14159265359f - _r_; \
+            const float _t2_ = _r_ * _r_; \
+            const float _t4_ = _t2_ * _t2_; \
+            result_var = -fmaf(_t4_, fmaf(_t2_, -0.0013888889f, 0.0416666667f), fmaf(_t2_, -0.5f, 1.0f)); \
+        } \
+    } while (0)
 
 #define FABE13_SIN(x, result_var) \
-  do { \
-    const float _x_ = (x); \
-    const float _ax_ = fabsf(_x_); \
-    float _r_ = fmodf(_ax_, 6.28318530718f); \
-    bool _sfl_ = _r_ > 3.14159265359f; \
-    if (_sfl_) \
-      _r_ = 6.28318530718f - _r_; \
-    bool _cfl_ = _r_ > 1.57079632679f; \
-    if (_cfl_) \
-      _r_ = 3.14159265359f - _r_; \
-    const float _t2_ = _r_ * _r_; \
-    float _s = fmaf(_t2_, fmaf(_t2_, fmaf(_t2_, -0.0001984127f, 0.0083333333f), -0.16666666f), 1.0f) * _r_; \
-    result_var = ((_x_ < 0.0f) ^ _sfl_) ? -_s : _s; \
-  } while (0)
+    do { \
+        const float _x_ = (x); \
+        const float _ax_ = fabsf(_x_); \
+        float _r_ = fmodf(_ax_, 6.28318530718f); \
+        bool _sfl_ = _r_ > 3.14159265359f; \
+        if (_sfl_) \
+            _r_ = 6.28318530718f - _r_; \
+        bool _cfl_ = _r_ > 1.57079632679f; \
+        if (_cfl_) \
+            _r_ = 3.14159265359f - _r_; \
+        const float _t2_ = _r_ * _r_; \
+        float _s = fmaf(_t2_, fmaf(_t2_, fmaf(_t2_, -0.0001984127f, 0.0083333333f), -0.16666666f), 1.0f) * _r_; \
+        result_var = ((_x_ < 0.0f) ^ _sfl_) ? -_s : _s; \
+    } while (0)
 
 #define FABE13_SINCOS(in, sin_out, cos_out, n) \
-  do { \
-    int i = 0; \
-    const int limit = (n) & ~7; \
-    if ((n) >= 8) { \
-      static __declspec(align(16)) const __m256 VEC_TWOPI = _mm256_set1_ps(6.28318530718f); \
-      static __declspec(align(16)) const __m256 VEC_PI = _mm256_set1_ps(3.14159265359f); \
-      static __declspec(align(16)) const __m256 VEC_PI_2 = _mm256_set1_ps(1.57079632679f); \
-      static __declspec(align(16)) const __m256 INV_TWOPI = _mm256_set1_ps(0.15915494309189535f); \
-      static __declspec(align(16)) const __m256 BIAS = _mm256_set1_ps(12582912.0f); \
-      static __declspec(align(16)) const __m256 VEC_COS_P5 = _mm256_set1_ps(-0.0013888889f); \
-      static __declspec(align(16)) const __m256 VEC_COS_P3 = _mm256_set1_ps(0.0416666667f); \
-      static __declspec(align(16)) const __m256 VEC_COS_P1 = _mm256_set1_ps(-0.5f); \
-      static __declspec(align(16)) const __m256 VEC_COS_P0 = _mm256_set1_ps(1.0f); \
-      static __declspec(align(16)) const __m256 VEC_SIN_P5 = _mm256_set1_ps(-0.0001984127f); \
-      static __declspec(align(16)) const __m256 VEC_SIN_P3 = _mm256_set1_ps(0.0083333333f); \
-      static __declspec(align(16)) const __m256 VEC_SIN_P1 = _mm256_set1_ps(-0.16666666f); \
-      static __declspec(align(16)) const __m256 VEC_SIN_P0 = _mm256_set1_ps(1.0f); \
-      static __declspec(align(16)) const __m256 VEC_ZERO = _mm256_setzero_ps(); \
-      while (i < limit) { \
-        const __m256 vx = _mm256_load_ps(&(in)[i]); \
-        const __m256 vax = _mm256_andnot_ps(_mm256_set1_ps(-0.0f), vx); \
-        __m256 q = _mm256_fmadd_ps(vax, INV_TWOPI, BIAS); \
-        q = _mm256_sub_ps(q, BIAS); \
-        const __m256 r = _mm256_fnmadd_ps(VEC_TWOPI, q, vax); \
-        const __m256 r1 = _mm256_min_ps(r, _mm256_sub_ps(VEC_TWOPI, r)); \
-        const __m256 r2 = _mm256_min_ps(r1, _mm256_sub_ps(VEC_PI, r1)); \
-        const __m256 t2 = _mm256_mul_ps(r2, r2); \
-        const __m256 cosv = _mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, VEC_COS_P5, VEC_COS_P3), VEC_COS_P1), VEC_COS_P0); \
-        const __m256 sinv = _mm256_mul_ps(_mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, VEC_SIN_P5, VEC_SIN_P3), VEC_SIN_P1), VEC_SIN_P0), r2); \
-        const __m256 cflip = _mm256_cmp_ps(r1, VEC_PI_2, _CMP_GT_OQ); \
-        const __m256 sflip = _mm256_xor_ps(_mm256_cmp_ps(vx, VEC_ZERO, _CMP_LT_OQ), _mm256_cmp_ps(r, VEC_PI, _CMP_GT_OQ)); \
-        _mm256_store_ps(&(cos_out)[i], _mm256_blendv_ps(cosv, _mm256_sub_ps(VEC_ZERO, cosv), cflip)); \
-        _mm256_store_ps(&(sin_out)[i], _mm256_blendv_ps(sinv, _mm256_sub_ps(VEC_ZERO, sinv), sflip)); \
-        i += 8; \
-      } \
-    } \
-    while (i < (n)) { \
-      const float x = (in)[i]; \
-      const float ax = fabsf(x); \
-      float q = fmaf(ax, 0.15915494309189535f, 12582912.0f); \
-      q -= 12582912.0f; \
-      float r = fmaf(-6.28318530718f, q, ax); \
-      const bool sflip = r > 3.14159265359f; \
-      if (sflip) \
-        r = 6.28318530718f - r; \
-      const bool cflip = r > 1.57079632679f; \
-      if (cflip) \
-        r = 3.14159265359f - r; \
-      const float t2 = r * r; \
-      const float c = fmaf(t2, fmaf(t2, fmaf(t2, -0.0013888889f, 0.0416666667f), -0.5f), 1.0f); \
-      const float s = fmaf(t2, fmaf(t2, fmaf(t2, -0.0001984127f, 0.0083333333f), -0.16666666f), 1.0f) * r; \
-      (cos_out)[i] = cflip ? -c : c; \
-      (sin_out)[i] = ((x < 0.0f) ^ sflip) ? -s : s; \
-      ++i; \
-    } \
-  } while (0)
+    do { \
+        int i = 0; \
+        const int limit = (n) & ~7; \
+        if ((n) >= 8) { \
+            static __declspec(align(16)) const __m256 VEC_TWOPI = _mm256_set1_ps(6.28318530718f); \
+            static __declspec(align(16)) const __m256 VEC_PI = _mm256_set1_ps(3.14159265359f); \
+            static __declspec(align(16)) const __m256 VEC_PI_2 = _mm256_set1_ps(1.57079632679f); \
+            static __declspec(align(16)) const __m256 INV_TWOPI = _mm256_set1_ps(0.15915494309189535f); \
+            static __declspec(align(16)) const __m256 BIAS = _mm256_set1_ps(12582912.0f); \
+            static __declspec(align(16)) const __m256 VEC_COS_P5 = _mm256_set1_ps(-0.0013888889f); \
+            static __declspec(align(16)) const __m256 VEC_COS_P3 = _mm256_set1_ps(0.0416666667f); \
+            static __declspec(align(16)) const __m256 VEC_COS_P1 = _mm256_set1_ps(-0.5f); \
+            static __declspec(align(16)) const __m256 VEC_COS_P0 = _mm256_set1_ps(1.0f); \
+            static __declspec(align(16)) const __m256 VEC_SIN_P5 = _mm256_set1_ps(-0.0001984127f); \
+            static __declspec(align(16)) const __m256 VEC_SIN_P3 = _mm256_set1_ps(0.0083333333f); \
+            static __declspec(align(16)) const __m256 VEC_SIN_P1 = _mm256_set1_ps(-0.16666666f); \
+            static __declspec(align(16)) const __m256 VEC_SIN_P0 = _mm256_set1_ps(1.0f); \
+            static __declspec(align(16)) const __m256 VEC_ZERO = _mm256_setzero_ps(); \
+            while (i < limit) { \
+                const __m256 vx = _mm256_load_ps(&(in)[i]); \
+                const __m256 vax = _mm256_andnot_ps(_mm256_set1_ps(-0.0f), vx); \
+                __m256 q = _mm256_fmadd_ps(vax, INV_TWOPI, BIAS); \
+                q = _mm256_sub_ps(q, BIAS); \
+                const __m256 r = _mm256_fnmadd_ps(VEC_TWOPI, q, vax); \
+                const __m256 r1 = _mm256_min_ps(r, _mm256_sub_ps(VEC_TWOPI, r)); \
+                const __m256 r2 = _mm256_min_ps(r1, _mm256_sub_ps(VEC_PI, r1)); \
+                const __m256 t2 = _mm256_mul_ps(r2, r2); \
+                const __m256 cosv = _mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, VEC_COS_P5, VEC_COS_P3), VEC_COS_P1), VEC_COS_P0); \
+                const __m256 sinv = _mm256_mul_ps(_mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, _mm256_fmadd_ps(t2, VEC_SIN_P5, VEC_SIN_P3), VEC_SIN_P1), VEC_SIN_P0), r2); \
+                const __m256 cflip = _mm256_cmp_ps(r1, VEC_PI_2, _CMP_GT_OQ); \
+                const __m256 sflip = _mm256_xor_ps(_mm256_cmp_ps(vx, VEC_ZERO, _CMP_LT_OQ), _mm256_cmp_ps(r, VEC_PI, _CMP_GT_OQ)); \
+                _mm256_store_ps(&(cos_out)[i], _mm256_blendv_ps(cosv, _mm256_sub_ps(VEC_ZERO, cosv), cflip)); \
+                _mm256_store_ps(&(sin_out)[i], _mm256_blendv_ps(sinv, _mm256_sub_ps(VEC_ZERO, sinv), sflip)); \
+                i += 8; \
+            } \
+        } \
+        while (i < (n)) { \
+            const float x = (in)[i]; \
+            const float ax = fabsf(x); \
+            float q = fmaf(ax, 0.15915494309189535f, 12582912.0f); \
+            q -= 12582912.0f; \
+            float r = fmaf(-6.28318530718f, q, ax); \
+            const bool sflip = r > 3.14159265359f; \
+            if (sflip) \
+                r = 6.28318530718f - r; \
+            const bool cflip = r > 1.57079632679f; \
+            if (cflip) \
+                r = 3.14159265359f - r; \
+            const float t2 = r * r; \
+            const float c = fmaf(t2, fmaf(t2, fmaf(t2, -0.0013888889f, 0.0416666667f), -0.5f), 1.0f); \
+            const float s = fmaf(t2, fmaf(t2, fmaf(t2, -0.0001984127f, 0.0083333333f), -0.16666666f), 1.0f) * r; \
+            (cos_out)[i] = cflip ? -c : c; \
+            (sin_out)[i] = ((x < 0.0f) ^ sflip) ? -s : s; \
+            ++i; \
+        } \
+    } while (0)
 
 enum List : unsigned {
 	Top = 0b00u,
@@ -122,30 +122,33 @@ enum List : unsigned {
 
 __declspec(align(16)) struct Step final {
 	const unsigned next, dx, dy;
-	Step(const unsigned n, const unsigned x, const unsigned y) noexcept : next(n), dx(x), dy(y) {}
+	__forceinline Step(const unsigned n, const unsigned x, const unsigned y) noexcept : next(n), dx(x), dy(y) {}
 };
 
 __declspec(align(16)) struct InvStep final {
 	const unsigned q, next;
-	InvStep(const unsigned q_val, const unsigned n) noexcept : q(q_val), next(n) {}
+	__forceinline InvStep(const unsigned q_val, const unsigned n) noexcept : q(q_val), next(n) {}
 };
 
 __declspec(align(16)) static const Step g_step_tbl[4][4] = {
-	{ Step(Right,0u,0u), Step(Top,0u,1u), Step(Top,1u,1u), Step(Left,1u,0u) },
-	{ Step(Left,1u,1u), Step(Down,1u,0u), Step(Down,0u,0u), Step(Right,0u,1u) },
-	{ Step(Down,1u,1u), Step(Left,0u,1u), Step(Left,0u,0u), Step(Top,1u,0u) },
-	{ Step(Top,0u,0u), Step(Right,1u,0u), Step(Right,1u,1u), Step(Down,0u,1u) }
+		{ Step(Right,0u,0u), Step(Top,0u,1u), Step(Top,1u,1u), Step(Left,1u,0u) },
+		{ Step(Left,1u,1u), Step(Down,1u,0u), Step(Down,0u,0u), Step(Right,0u,1u) },
+		{ Step(Down,1u,1u), Step(Left,0u,1u), Step(Left,0u,0u), Step(Top,1u,0u) },
+		{ Step(Top,0u,0u), Step(Right,1u,0u), Step(Right,1u,1u), Step(Down,0u,1u) }
 };
 
 __declspec(align(16)) static const InvStep g_inv_tbl[4][4] = {
-	{ InvStep(0u,Right), InvStep(1u,Top), InvStep(3u,Left), InvStep(2u,Top) },
-	{ InvStep(2u,Down), InvStep(3u,Right), InvStep(1u,Down), InvStep(0u,Left) },
-	{ InvStep(2u,Left), InvStep(1u,Left), InvStep(3u,Top), InvStep(0u,Down) },
-	{ InvStep(0u,Top), InvStep(3u,Down), InvStep(1u,Right), InvStep(2u,Right) }
+		{ InvStep(0u,Right), InvStep(1u,Top), InvStep(3u,Left), InvStep(2u,Top) },
+		{ InvStep(2u,Down), InvStep(3u,Right), InvStep(1u,Down), InvStep(0u,Left) },
+		{ InvStep(2u,Left), InvStep(1u,Left), InvStep(3u,Top), InvStep(0u,Down) },
+		{ InvStep(0u,Top), InvStep(3u,Down), InvStep(1u,Right), InvStep(2u,Right) }
 };
 
 static const boost::mpi::environment* g_env;
 static const boost::mpi::communicator* g_world;
+static const pybind11::scoped_interpreter* g_pyInterpreter;
+static const pybind11::module_* g_pyOptimizerBridge;
+static std::string g_exeDirCache;
 
 __declspec(align(16)) struct CrossMsg final {
 	float s_x1, s_x2, e_x1, e_x2, Rtop;
@@ -170,13 +173,13 @@ __declspec(align(16)) struct BestSolutionMsg final {
 	}
 };
 
-__declspec(align(16)) struct Slab final {
-	char* const base;
-	char* current;
-	char* const end;
-	__forceinline Slab(void* const memory, const size_t usable) noexcept :
-		base((char*)memory), current(base), end(base + (usable & ~(size_t)63u)) {
-	}
+__declspec(align(16)) struct Slab final sealed{
+		char* const base;
+		char* current;
+		char* const end;
+		__forceinline Slab(void* const memory, const size_t usable) noexcept :
+				base((char*)memory), current(base), end(base + (usable & ~(size_t)63u)) {
+		}
 };
 
 static thread_local tbb::enumerable_thread_specific<Slab*> tls([]() noexcept {
@@ -192,84 +195,48 @@ static thread_local tbb::enumerable_thread_specific<Slab*> tls([]() noexcept {
 	return slab;
 	});
 
-__declspec(align(16)) struct Peano2DMap final {
-	const int levels;
-	const float a, b, c, d;
-	const float lenx, leny;
-	const float inv_lenx;
-	const unsigned scale;
-	const unsigned start;
+__declspec(align(16)) struct Peano2DMap final sealed{
+		const int levels;
+		const float a, b, c, d;
+		const float lenx, leny;
+		const float inv_lenx;
+		const unsigned scale;
+		const unsigned start;
 
-	__forceinline Peano2DMap(const int L, const float _a, const float _b, const float _c, const float _d, const unsigned st) noexcept
-		: levels(L), a(_a), b(_b), c(_c), d(_d),
-		lenx(_b - _a), leny(_d - _c), inv_lenx(1.0f / (_b - _a)),
-		scale((unsigned)1u << (L << 1)), start(st) {
-	}
+		__forceinline Peano2DMap(const int L, const float _a, const float _b, const float _c, const float _d, const unsigned st) noexcept
+				: levels(L), a(_a), b(_b), c(_c), d(_d),
+				lenx(_b - _a), leny(_d - _c), inv_lenx(1.0f / (_b - _a)),
+				scale((unsigned)1u << (L << 1)), start(st) {
+		}
 };
 
 static Peano2DMap gActiveMap(0, 0, 0, 0, 0, 0);
 
-__declspec(align(16)) struct Interval1D final {
-	const float x1, x2, y1, y2, delta_y, ordinate_factor, N_factor, quadratic_term, M;
-	float R;
+__declspec(align(16)) struct Interval1D final sealed{
+		const float x1, x2, y1, y2, delta_y, ordinate_factor, N_factor, quadratic_term, M;
+		float R;
 
-	static __declspec(noalias) __forceinline void* operator new(const size_t) noexcept {
-		Slab* s = tls.local();
-		char* r = s->current;
-		s->current += 64u;
-		return r;
-	}
+		static __declspec(noalias) __forceinline void* operator new(const size_t) noexcept {
+				Slab* s = tls.local();
+				char* r = s->current;
+				s->current += 64u;
+				return r;
+		}
 
-	__declspec(noalias) __forceinline Interval1D(const float _x1, const float _x2, const float _y1, const float _y2, const float _N) noexcept
-		: x1(_x1), x2(_x2), y1(_y1), y2(_y2), delta_y(_y2 - _y1), ordinate_factor(-(y1 + y2) * 2.0f),
-		N_factor(_N == 1.0f ? _x2 - _x1 : sqrtf(_x2 - _x1)),
-		quadratic_term(fmaf((1.0f / N_factor)* delta_y, delta_y, 0.0f)),
-		M(fabsf(delta_y) / N_factor) {
-	}
+		__declspec(noalias) __forceinline Interval1D(const float _x1, const float _x2, const float _y1, const float _y2, const float _N) noexcept
+				: x1(_x1), x2(_x2), y1(_y1), y2(_y2), delta_y(_y2 - _y1), ordinate_factor(-(y1 + y2) * 2.0f),
+				N_factor(_N == 1.0f ? _x2 - _x1 : sqrtf(_x2 - _x1)),
+				quadratic_term(fmaf((1.0f / N_factor)* delta_y, delta_y, 0.0f)),
+				M(fabsf(delta_y) / N_factor) {
+		}
 
-	__declspec(noalias) __forceinline void ChangeCharacteristic(const float _m) noexcept {
-		const float inv_m = 1.0f / _m;
-		R = fmaf(inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
-	}
-};
-
-__declspec(align(16)) struct IntervalND final {
-	const float x1, x2, y1, y2, delta_y, ordinate_factor;
-	float N_factor, quadratic_term, M, R;
-	unsigned long long i1, i2;
-	float diam;
-	int span_level;
-
-	static __declspec(noalias) __forceinline void* operator new(const size_t) noexcept {
-		Slab* s = tls.local();
-		char* r = s->current;
-		s->current += 64u;
-		return r;
-	}
-
-	__declspec(noalias) __forceinline IntervalND(const float _x1, const float _x2, const float _y1, const float _y2) noexcept
-		: x1(_x1), x2(_x2), y1(_y1), y2(_y2), delta_y(_y2 - _y1), ordinate_factor(-(y1 + y2) * 2.0f),
-		N_factor(0), quadratic_term(0), M(0), R(0), i1(0), i2(0), diam(0), span_level(0) {
-	}
-
-	__declspec(noalias) __forceinline void compute_span_level(const struct MortonND& map) noexcept;
-	__declspec(noalias) __forceinline void set_metric(const float d_alpha) noexcept {
-		N_factor = d_alpha;
-		quadratic_term = (1.0f / N_factor) * delta_y * delta_y;
-		M = fabsf(delta_y) / N_factor;
-	}
-
-	__declspec(noalias) __forceinline void ChangeCharacteristic(const float _m) noexcept {
-		const float inv_m = 1.0f / _m;
-		R = fmaf(inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
-	}
+		__declspec(noalias) __forceinline void ChangeCharacteristic(const float _m) noexcept {
+				const float inv_m = 1.0f / _m;
+				R = fmaf(inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
+		}
 };
 
 static __declspec(noalias) __forceinline bool ComparePtr1D(const Interval1D* const a, const Interval1D* const b) noexcept {
-	return a->R < b->R;
-}
-
-static __declspec(noalias) __forceinline bool ComparePtrND(const IntervalND* const a, const IntervalND* const b) noexcept {
 	return a->R < b->R;
 }
 
@@ -346,6 +313,42 @@ static __declspec(noalias) __forceinline void RecomputeR_AffineM_AVX2_1D(Interva
 		arr[i]->R = fmaf((1.0f / mi) * p->quadratic_term, 1.0f, fmaf(mi, p->N_factor, p->ordinate_factor));
 		++i;
 	}
+}
+
+__declspec(align(16)) struct IntervalND final sealed{
+		const float x1, x2, y1, y2, delta_y, ordinate_factor;
+		float N_factor, quadratic_term, M, R;
+		unsigned long long i1, i2;
+		float diam;
+		int span_level;
+
+		static __declspec(noalias) __forceinline void* operator new(const size_t) noexcept {
+				Slab* s = tls.local();
+				char* r = s->current;
+				s->current += 64u;
+				return r;
+		}
+
+		__declspec(noalias) __forceinline IntervalND(const float _x1, const float _x2, const float _y1, const float _y2) noexcept
+				: x1(_x1), x2(_x2), y1(_y1), y2(_y2), delta_y(_y2 - _y1), ordinate_factor(-(y1 + y2) * 2.0f),
+				N_factor(0), quadratic_term(0), M(0), R(0), i1(0), i2(0), diam(0), span_level(0) {
+		}
+
+		__declspec(noalias) __forceinline void compute_span_level(const struct MortonND& map) noexcept;
+		__declspec(noalias) __forceinline void set_metric(const float d_alpha) noexcept {
+				N_factor = d_alpha;
+				quadratic_term = (1.0f / N_factor) * delta_y * delta_y;
+				M = fabsf(delta_y) / N_factor;
+		}
+
+		__declspec(noalias) __forceinline void ChangeCharacteristic(const float _m) noexcept {
+				const float inv_m = 1.0f / _m;
+				R = fmaf(inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
+		}
+};
+
+static __declspec(noalias) __forceinline bool ComparePtrND(const IntervalND* const a, const IntervalND* const b) noexcept {
+	return a->R < b->R;
 }
 
 static __declspec(noalias) __forceinline void RecomputeR_ConstM_AVX2_ND(IntervalND* const* const arr, const size_t n, const float m) noexcept {
@@ -509,10 +512,10 @@ static __declspec(noalias) __forceinline float step(const float _m, const float 
 	return fmaf((1.0f / fast_pow_int(_m, _N)) * sign_mult * fast_pow_int(fabsf(diff), _N) * _r, 1.0f, x1 + x2) * 0.5f;
 }
 
-__declspec(align(16)) struct MortonCachePerRank final {
-	std::vector<int> permCache;
-	std::vector<unsigned long long> invMaskCache;
-	unsigned baseSeed;
+__declspec(align(16)) struct MortonCachePerRank final sealed{
+		std::vector<int> permCache;
+		std::vector<unsigned long long> invMaskCache;
+		unsigned baseSeed;
 };
 
 static thread_local MortonCachePerRank g_mc;
@@ -531,177 +534,177 @@ static __declspec(noalias) __forceinline long long gray_decode(unsigned long lon
 	return g;
 }
 
-__declspec(align(16)) struct MortonND final {
-	const int dim, levels;
-	const int eff_levels;
-	const int extra_levels;
-	const int chunks;
-	std::vector<int> chunk_bits;
-	std::vector<unsigned long long> chunk_bases;
-	unsigned long long scale;
-	std::vector<float> low, high, step, invStep, baseOff;
-	std::vector<int> perm;
-	std::vector<unsigned long long> invMask;
-	std::vector<unsigned long long> pextMask;
-	std::vector<unsigned long long> pextMaskChunks;
-	const float invScaleLevel;
-	const bool use_gray;
+__declspec(align(16)) struct MortonND final sealed{
+		const int dim, levels;
+		const int eff_levels;
+		const int extra_levels;
+		const int chunks;
+		std::vector<int> chunk_bits;
+		std::vector<unsigned long long> chunk_bases;
+		unsigned long long scale;
+		std::vector<float> low, high, step, invStep, baseOff;
+		std::vector<int> perm;
+		std::vector<unsigned long long> invMask;
+		std::vector<unsigned long long> pextMask;
+		std::vector<unsigned long long> pextMaskChunks;
+		const float invScaleLevel;
+		const bool use_gray;
 
-	static __declspec(noalias) __forceinline unsigned long long make_mask(const int dim, const int Lc, const int d) noexcept {
-		unsigned long long m = 0ull, bitpos = static_cast<unsigned long long>(d);
-		int b = 0;
+		static __declspec(noalias) __forceinline unsigned long long make_mask(const int dim, const int Lc, const int d) noexcept {
+				unsigned long long m = 0ull, bitpos = static_cast<unsigned long long>(d);
+				int b = 0;
 #pragma loop ivdep
-		while (b < Lc) {
-			m |= 1ull << bitpos;
-			bitpos += static_cast<unsigned long long>(dim);
-			++b;
-		}
-		return m;
-	}
-
-	__declspec(noalias) __forceinline MortonND(const int D, const int L, const float* const lows, const float* const highs, const MortonCachePerRank& mc)
-		: dim(D), levels(L),
-		eff_levels((std::max)(1, static_cast<int>(63 / (D ? D : 1)))),
-		extra_levels((L > eff_levels) ? (L - eff_levels) : 0),
-		chunks((extra_levels > 0) ? (1 + (extra_levels + eff_levels - 1) / eff_levels) : 1),
-		low(lows, lows + D), high(highs, highs + D),
-		step(D, 0.0f), invStep(D, 0.0f), baseOff(D, 0.0f),
-		perm(mc.permCache.begin(), mc.permCache.begin() + D),
-		invMask(mc.invMaskCache.begin(), mc.invMaskCache.begin() + D),
-		invScaleLevel(1.0f / static_cast<float>(static_cast<unsigned long long>(1) << L)), use_gray(true) {
-
-		int d = 0;
-#pragma loop ivdep
-		while (d < dim) {
-			const float rng = high[d] - low[d];
-			const float st = rng * invScaleLevel;
-			step[d] = st;
-			invStep[d] = 1.0f / st;
-			baseOff[d] = fmaf(0.5f, st, low[d]);
-			++d;
-		}
-
-		chunk_bits.resize(chunks);
-		pextMaskChunks.resize(static_cast<size_t>(chunks) * static_cast<size_t>(dim));
-		chunk_bases.resize(chunks);
-		int remaining = levels;
-		int c = 0;
-		while (c < chunks) {
-			const int Lc = (c == 0) ? (std::min)(eff_levels, remaining) : (std::min)(eff_levels, remaining);
-			chunk_bits[c] = Lc;
-			remaining -= Lc;
-			const unsigned long long baseC = static_cast<unsigned long long>(1) << (dim * Lc);
-			chunk_bases[c] = baseC;
-			d = 0;
-#pragma loop ivdep
-			while (d < dim) {
-				pextMaskChunks[static_cast<size_t>(c) * static_cast<size_t>(dim) + static_cast<size_t>(d)] = make_mask(dim, Lc, d);
-				++d;
-			}
-			++c;
-		}
-
-		pextMask.resize(dim);
-		d = 0;
-#pragma loop ivdep
-		while (d < dim) {
-			pextMask[d] = make_mask(dim, chunk_bits[0], d);
-			++d;
-		}
-
-		scale = static_cast<unsigned long long>(1) << (dim * chunk_bits[0]);
-	}
-
-	__declspec(noalias) __forceinline float block_diameter(unsigned long long i1, unsigned long long i2) const noexcept {
-		if (i1 > i2) std::swap(i1, i2);
-		float s2 = 0.0f;
-		int d = 0;
-#pragma loop ivdep
-		while (d < dim) {
-			const int pd = perm[d];
-			const unsigned long long varying = (i1 ^ i2) & pextMask[d];
-			const int nfree_hi = _mm_popcnt_u64(varying);
-			const int nfree_total = nfree_hi + (levels - chunk_bits[0]);
-			const float range = step[pd] * (ldexpf(1.0f, nfree_total) - 1.0f);
-			s2 = fmaf(range, range, s2);
-			++d;
-		}
-		return sqrtf(s2);
-	}
-
-	__declspec(noalias) __forceinline void map01ToPoint(const float t, float* const __restrict out) const noexcept {
-		unsigned long long accBits[32] = { 0ull };
-		int accShifted[32] = { 0 };
-
-		int c = 0;
-		while (c < chunks) {
-			const int Lc = chunk_bits[c];
-			const unsigned long long baseC = chunk_bases[c];
-			const float scaled = t * static_cast<float>(baseC);
-			unsigned long long idxc = (scaled >= static_cast<float>(baseC)) ? (baseC - 1ull) : static_cast<unsigned long long>(scaled);
-			const float u = scaled - static_cast<float>(idxc);
-			if (use_gray) idxc = gray_encode(idxc);
-
-			int shift_from_top = 0;
-			int k = 0;
-			while (k <= c) {
-				shift_from_top += chunk_bits[k];
-				++k;
-			}
-			const int inv_shift = levels - shift_from_top;
-
-			int d = 0;
-#pragma loop ivdep
-			while (d < dim) {
-				const int pd = perm[d];
-				const unsigned long long mask = pextMaskChunks[static_cast<size_t>(c) * static_cast<size_t>(dim) + static_cast<size_t>(d)];
-				unsigned long long bits = _pext_u64(idxc, mask);
-				if (inv_shift >= 0) {
-					unsigned long long invMaskSegment = 0ull;
-					if (chunk_bits[c] < 63) {
-						const unsigned long long take = (static_cast<unsigned long long>(1) << chunk_bits[c]) - 1ull;
-						invMaskSegment = (invMask[pd] >> inv_shift) & take;
-					}
-					bits ^= invMaskSegment;
+				while (b < Lc) {
+						m |= 1ull << bitpos;
+						bitpos += static_cast<unsigned long long>(dim);
+						++b;
 				}
-				accBits[pd] = (accBits[pd] << Lc) | bits;
-				accShifted[pd] += Lc;
-				++d;
-			}
-			++c;
+				return m;
 		}
-		int d = 0;
-#pragma loop ivdep
-		while (d < dim) {
-			out[d] = fmaf(step[d], static_cast<float>(accBits[d]), baseOff[d]);
-			++d;
-		}
-	}
 
-	__declspec(noalias) __forceinline float pointToT(const float* const __restrict q) const noexcept {
-		const int bitsFull = levels;
-		const int bitsCoarse = chunk_bits[0];
-		unsigned long long idx0 = 0ull;
-		int d = 0;
+		__declspec(noalias) __forceinline MortonND(const int D, const int L, const float* const lows, const float* const highs, const MortonCachePerRank& mc)
+				: dim(D), levels(L),
+				eff_levels((std::max)(1, static_cast<int>(63 / (D ? D : 1)))),
+				extra_levels((L > eff_levels) ? (L - eff_levels) : 0),
+				chunks((extra_levels > 0) ? (1 + (extra_levels + eff_levels - 1) / eff_levels) : 1),
+				low(lows, lows + D), high(highs, highs + D),
+				step(D, 0.0f), invStep(D, 0.0f), baseOff(D, 0.0f),
+				perm(mc.permCache.begin(), mc.permCache.begin() + D),
+				invMask(mc.invMaskCache.begin(), mc.invMaskCache.begin() + D),
+				invScaleLevel(1.0f / static_cast<float>(static_cast<unsigned long long>(1) << L)), use_gray(true) {
+
+				int d = 0;
 #pragma loop ivdep
-		while (d < dim) {
-			const int pd = perm[d];
-			const float v = (q[pd] - baseOff[pd]) * invStep[pd];
-			const long long cell = static_cast<long long>(_mm_cvt_ss2si(_mm_round_ss(_mm_setzero_ps(), _mm_set_ss(v), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)));
-			const long long maxv = (static_cast<long long>(1) << bitsFull) - 1;
-			unsigned long long b = static_cast<unsigned long long>(cell) >> (bitsFull - bitsCoarse);
-			unsigned long long invMask0 = 0ull;
-			if (bitsCoarse < 63) {
-				const unsigned long long take = (static_cast<unsigned long long>(1) << bitsCoarse) - 1ull;
-				invMask0 = (invMask[pd] >> (bitsFull - bitsCoarse)) & take;
-			}
-			b ^= invMask0;
-			idx0 |= _pdep_u64(b, pextMask[d]);
-			++d;
+				while (d < dim) {
+						const float rng = high[d] - low[d];
+						const float st = rng * invScaleLevel;
+						step[d] = st;
+						invStep[d] = 1.0f / st;
+						baseOff[d] = fmaf(0.5f, st, low[d]);
+						++d;
+				}
+
+				chunk_bits.resize(chunks);
+				pextMaskChunks.resize(static_cast<size_t>(chunks) * static_cast<size_t>(dim));
+				chunk_bases.resize(chunks);
+				int remaining = levels;
+				int c = 0;
+				while (c < chunks) {
+						const int Lc = (c == 0) ? (std::min)(eff_levels, remaining) : (std::min)(eff_levels, remaining);
+						chunk_bits[c] = Lc;
+						remaining -= Lc;
+						const unsigned long long baseC = static_cast<unsigned long long>(1) << (dim * Lc);
+						chunk_bases[c] = baseC;
+						d = 0;
+#pragma loop ivdep
+						while (d < dim) {
+								pextMaskChunks[static_cast<size_t>(c) * static_cast<size_t>(dim) + static_cast<size_t>(d)] = make_mask(dim, Lc, d);
+								++d;
+						}
+						++c;
+				}
+
+				pextMask.resize(dim);
+				d = 0;
+#pragma loop ivdep
+				while (d < dim) {
+						pextMask[d] = make_mask(dim, chunk_bits[0], d);
+						++d;
+				}
+
+				scale = static_cast<unsigned long long>(1) << (dim * chunk_bits[0]);
 		}
-		if (use_gray) idx0 = gray_decode(idx0);
-		return (static_cast<float>(idx0) + 0.5f) / static_cast<float>(scale);
-	}
+
+		__declspec(noalias) __forceinline float block_diameter(unsigned long long i1, unsigned long long i2) const noexcept {
+				if (i1 > i2) std::swap(i1, i2);
+				float s2 = 0.0f;
+				int d = 0;
+#pragma loop ivdep
+				while (d < dim) {
+						const int pd = perm[d];
+						const unsigned long long varying = (i1 ^ i2) & pextMask[d];
+						const int nfree_hi = _mm_popcnt_u64(varying);
+						const int nfree_total = nfree_hi + (levels - chunk_bits[0]);
+						const float range = step[pd] * (ldexpf(1.0f, nfree_total) - 1.0f);
+						s2 = fmaf(range, range, s2);
+						++d;
+				}
+				return sqrtf(s2);
+		}
+
+		__declspec(noalias) __forceinline void map01ToPoint(const float t, float* const __restrict out) const noexcept {
+				unsigned long long accBits[32] = { 0ull };
+				int accShifted[32] = { 0 };
+
+				int c = 0;
+				while (c < chunks) {
+						const int Lc = chunk_bits[c];
+						const unsigned long long baseC = chunk_bases[c];
+						const float scaled = t * static_cast<float>(baseC);
+						unsigned long long idxc = (scaled >= static_cast<float>(baseC)) ? (baseC - 1ull) : static_cast<unsigned long long>(scaled);
+						const float u = scaled - static_cast<float>(idxc);
+						if (use_gray) idxc = gray_encode(idxc);
+
+						int shift_from_top = 0;
+						int k = 0;
+						while (k <= c) {
+								shift_from_top += chunk_bits[k];
+								++k;
+						}
+						const int inv_shift = levels - shift_from_top;
+
+						int d = 0;
+#pragma loop ivdep
+						while (d < dim) {
+								const int pd = perm[d];
+								const unsigned long long mask = pextMaskChunks[static_cast<size_t>(c) * static_cast<size_t>(dim) + static_cast<size_t>(d)];
+								unsigned long long bits = _pext_u64(idxc, mask);
+								if (inv_shift >= 0) {
+										unsigned long long invMaskSegment = 0ull;
+										if (chunk_bits[c] < 63) {
+												const unsigned long long take = (static_cast<unsigned long long>(1) << chunk_bits[c]) - 1ull;
+												invMaskSegment = (invMask[pd] >> inv_shift) & take;
+										}
+										bits ^= invMaskSegment;
+								}
+								accBits[pd] = (accBits[pd] << Lc) | bits;
+								accShifted[pd] += Lc;
+								++d;
+						}
+						++c;
+				}
+				int d = 0;
+#pragma loop ivdep
+				while (d < dim) {
+						out[d] = fmaf(step[d], static_cast<float>(accBits[d]), baseOff[d]);
+						++d;
+				}
+		}
+
+		__declspec(noalias) __forceinline float pointToT(const float* const __restrict q) const noexcept {
+				const int bitsFull = levels;
+				const int bitsCoarse = chunk_bits[0];
+				unsigned long long idx0 = 0ull;
+				int d = 0;
+#pragma loop ivdep
+				while (d < dim) {
+						const int pd = perm[d];
+						const float v = (q[pd] - baseOff[pd]) * invStep[pd];
+						const long long cell = static_cast<long long>(_mm_cvt_ss2si(_mm_round_ss(_mm_setzero_ps(), _mm_set_ss(v), _MM_FROUND_TO_NEAREST_INT | _MM_FROUND_NO_EXC)));
+						const long long maxv = (static_cast<long long>(1) << bitsFull) - 1;
+						unsigned long long b = static_cast<unsigned long long>(cell) >> (bitsFull - bitsCoarse);
+						unsigned long long invMask0 = 0ull;
+						if (bitsCoarse < 63) {
+								const unsigned long long take = (static_cast<unsigned long long>(1) << bitsCoarse) - 1ull;
+								invMask0 = (invMask[pd] >> (bitsFull - bitsCoarse)) & take;
+						}
+						b ^= invMask0;
+						idx0 |= _pdep_u64(b, pextMask[d]);
+						++d;
+				}
+				if (use_gray) idx0 = gray_decode(idx0);
+				return (static_cast<float>(idx0) + 0.5f) / static_cast<float>(scale);
+		}
 };
 
 __declspec(noalias) __forceinline void IntervalND::compute_span_level(const MortonND& map) noexcept {
@@ -717,81 +720,85 @@ __declspec(noalias) __forceinline void IntervalND::compute_span_level(const Mort
 	span_level = (std::min)(span_level, 11);
 }
 
-__declspec(align(16)) struct ManipCost final {
-	const int n;
-	const bool variableLen;
-	const float targetX, targetY;
-	const float minTheta;
-	const float archBiasW, archBiasK;
-	const float sharpW;
+__declspec(align(16)) struct ManipCost final sealed{
+		const int n;
+		const bool variableLen;
+		const float targetX, targetY;
+		const float minTheta;
+		const float archBiasW, archBiasK;
+		const float sharpW;
 
-	__declspec(noalias) __forceinline ManipCost(const int _n, const bool _variableLen, const float _targetX, const float _targetY, const float _minTheta) noexcept
-		: n(_n), variableLen(_variableLen), targetX(_targetX), targetY(_targetY), minTheta(_minTheta),
-		archBiasW(0.02f), archBiasK(3.0f), sharpW(0.05f) {
-	}
+		__declspec(noalias) __forceinline ManipCost(const int _n, const bool _variableLen, const float _targetX, const float _targetY, const float _minTheta) noexcept
+				: n(_n), variableLen(_variableLen), targetX(_targetX), targetY(_targetY), minTheta(_minTheta),
+				archBiasW(0.02f), archBiasK(3.0f), sharpW(0.05f) {
+		}
 
-	__declspec(noalias) __forceinline float operator()(const float* const __restrict q, float& out_x, float& out_y) const noexcept {
-		const float* const th = q;
-		const float* const L = variableLen ? (q + n) : nullptr;
-		__declspec(align(16)) float phi[32], s_arr[32], c_arr[32];
-		float x = 0.0f, y = 0.0f, phi_acc = 0.0f, penC = 0.0f, archPen = 0.0f;
+		__declspec(noalias) __forceinline float operator()(const float* const __restrict q, float& out_x, float& out_y) const noexcept {
+				const float* const __restrict th = q;
+				const float* const __restrict L = variableLen ? (q + n) : nullptr;
+				__declspec(align(16)) float phi[32], s_arr[32], c_arr[32];
+				float x = 0.0f, y = 0.0f, phi_acc = 0.0f, penC = 0.0f, archPen = 0.0f;
 
-		int i = 0;
+				int i = 0;
 #pragma loop ivdep
-		while (i < n) {
-			phi_acc += th[i];
-			phi[i] = phi_acc;
-			++i;
-		}
-		FABE13_SINCOS(phi, s_arr, c_arr, n);
+				while (i < n) {
+						phi_acc += th[i];
+						phi[i] = phi_acc;
+						++i;
+				}
+				FABE13_SINCOS(phi, s_arr, c_arr, n);
 
-		const float Lc = 1.0f;
-		if (variableLen) {
-			i = 0;
-			while (i < n) {
-				const float Li = L[i];
-				x = fmaf(Li, c_arr[i], x);
-				y = fmaf(Li, s_arr[i], y);
-				++i;
-			}
-		}
-		else {
-			i = 0;
-			while (i < n) {
-				x = fmaf(Lc, c_arr[i], x);
-				y = fmaf(Lc, s_arr[i], y);
-				++i;
-			}
-		}
+				const float sharpScale = 2.0f / (minTheta + 1.0e-6f);
+				const float Lc = 1.0f;
+				if (variableLen) {
+						i = 0;
+						while (i < n) {
+								const float Li = L[i];
+								x = fmaf(Li, c_arr[i], x);
+								y = fmaf(Li, s_arr[i], y);
+								++i;
+						}
+				}
+				else {
+						i = 0;
+						while (i < n) {
+								x = fmaf(Lc, c_arr[i], x);
+								y = fmaf(Lc, s_arr[i], y);
+								++i;
+						}
+				}
 
-		i = 0;
+				i = 0;
 #pragma loop ivdep
-		while (i < n) {
-			const float ai = fabsf(th[i]);
-			const float v = ai - minTheta;
-			if (v > 0.0f) {
-				const float scale = 2.0f / (minTheta + 1.0e-6f);
-				penC += sharpW * (exp2f(scale * v) - 1.0f);
-			}
-			const float t = -th[i] * archBiasK;
-			float sp;
-			if (t > 10.0f) {
-				sp = t;
-			}
-			else {
-				const float e_t = fmaf(t, fmaf(t, fmaf(t, fmaf(t, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
-				sp = log1pf(e_t);
-			}
-			archPen += archBiasW * sp;
-			++i;
-		}
+				while (i < n) {
+						const float theta = th[i];
+						const float ai = fabsf(theta);
+						const float v = ai - minTheta;
+						if (v > 0.0f) {
+								const float scale = sharpScale * v;
+								const float arg = scale * 0.69314718055994530941723212145818f;
+								const float exp2_val = fmaf(arg, fmaf(arg, fmaf(arg, fmaf(arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
+								penC = fmaf(sharpW, exp2_val - 1.0f, penC);
+						}
+						const float t = -theta * archBiasK;
+						float sp;
+						if (t > 10.0f) {
+								sp = t;
+						}
+						else {
+								const float exp_val = fmaf(t, fmaf(t, fmaf(t, fmaf(t, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
+								sp = log1pf(exp_val);
+						}
+						archPen = fmaf(archBiasW, sp, archPen);
+						++i;
+				}
 
-		const float dx = x - targetX, dy = y - targetY;
-		const float dist = sqrtf(fmaf(dx, dx, dy * dy));
-		out_x = x;
-		out_y = y;
-		return dist + penC + archPen;
-	}
+				const float dx = x - targetX, dy = y - targetY;
+				const float dist = sqrtf(fmaf(dx, dx, dy * dy));
+				out_x = x;
+				out_y = y;
+				return dist + penC + archPen;
+		}
 };
 
 static __declspec(noalias) __forceinline void HitTest2D_analytic(const float x_param, float& out_x1, float& out_x2) noexcept {
@@ -1063,15 +1070,17 @@ static __declspec(noalias) void agp_run_branch_mpi(
 						const float ai = fabsf(q_local[i]);
 						const float v = ai - cost.minTheta;
 						if (v > 0.0f) {
-							const float scale = fmaf(cost.minTheta, 1.0f, 1.0e-6f);
-							const float e = exp2f(fmaf(2.0f / scale, v, 0.0f));
-							const float dpen_dtheta = cost.sharpW * fmaf(e, fmaf(0.69314718055994530941723212145818f, 2.0f / scale, 0.0f), 0.0f) * (copysignf(1.0f, q_local[i]));
+							const float scale_arg = (2.0f / fmaf(cost.minTheta, 1.0f, 1.0e-6f)) * v * 0.69314718055994530941723212145818f;
+							const float exp_val = fmaf(scale_arg, fmaf(scale_arg, fmaf(scale_arg, fmaf(scale_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
+							const float dpen_dtheta = cost.sharpW * exp_val * (0.69314718055994530941723212145818f * (2.0f / (cost.minTheta + 1.0e-6f))) * copysignf(1.0f, q_local[i]);
 							gpen = fmaf(dpen_dtheta, 1.0f, gpen);
 						}
 					}
 					{
 						const float tsg = fmaf(-q_local[i], cost.archBiasK, 0.0f);
-						const float sig = 1.0f / fmaf(expf(-tsg), 1.0f, 1.0f);
+						const float exp_arg = -tsg;
+						const float exp_val = fmaf(exp_arg, fmaf(exp_arg, fmaf(exp_arg, fmaf(exp_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
+						const float sig = 1.0f / fmaf(exp_val, 1.0f, 1.0f);
 						gpen = fmaf(-(cost.archBiasW * cost.archBiasK), sig, gpen);
 					}
 
@@ -1312,10 +1321,10 @@ static __declspec(noalias) void agp_run_branch_mpi(
 		const bool stagnation = (no_improve > 100) && (it > 270);
 
 		const float exp_arg = fmaf(-0.06f, dim_f, 0.0f);
-		const float exp2_exp_arg = exp2f(exp_arg);
+		const float exp2_exp_arg = fmaf(exp_arg * 0.69314718055994530941723212145818f, fmaf(exp_arg * 0.69314718055994530941723212145818f, fmaf(exp_arg * 0.69314718055994530941723212145818f, fmaf(exp_arg * 0.69314718055994530941723212145818f, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
 		const float A = fmaf(64.0f, exp2_exp_arg, 200.0f);
 		const float B = fmaf(67.0f, exp2_exp_arg, 210.0f);
-		const int T = static_cast<int>(fmaf(-expm1f(p), A, B));
+		const int T = static_cast<int>(fmaf(-(exp2_exp_arg - 1.0f), A, B));
 
 		const float p_arg = fmaf(p, 2.3f, -3.0f);
 		const float r_eff = fmaf(-fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f), 1.0f, 1.05f);
@@ -1517,8 +1526,8 @@ static __declspec(noalias) void agp_run_branch_mpi(
 					IntervalND* const topH = H.front();
 					if (inj->R > fmaf(1.15f, topH->R, 0.0f)) {
 						const float p2 = fmaf(-1.0f / initial_len, dmax, 1.0f);
-						const float kf = (no_improve > 100 && it > 270) ? fmaf(0.5819767068693265f, expm1f(p2), 0.3f)
-							: fmaf(0.3491860241215959f, expm1f(p2), 0.6f);
+						const float kf = (no_improve > 100 && it > 270) ? fmaf(0.5819767068693265f, (fmaf(p2 * 0.69314718055994530941723212145818f, fmaf(p2 * 0.69314718055994530941723212145818f, fmaf(p2 * 0.69314718055994530941723212145818f, fmaf(p2 * 0.69314718055994530941723212145818f, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) - 1.0f), 0.3f)
+							: fmaf(0.3491860241215959f, (fmaf(p2 * 0.69314718055994530941723212145818f, fmaf(p2 * 0.69314718055994530941723212145818f, fmaf(p2 * 0.69314718055994530941723212145818f, fmaf(p2 * 0.69314718055994530941723212145818f, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) - 1.0f), 0.6f);
 						inj->R = fmaf(d[4], kf, 0.0f);
 						H.emplace_back(inj);
 						std::push_heap(H.begin(), H.end(), ComparePtrND);
@@ -1629,11 +1638,14 @@ static __declspec(noalias) __forceinline void HoaraSort(std::vector<IntervalND*>
 }
 
 extern "C" __declspec(dllexport) __declspec(noalias)
-void AGP_Manip2D(const int nSegments, const bool variableLengths, const float minTheta, const float targetX, const float targetY,
-	const int peanoLevels, const int maxIterPerBranch, const float r, const bool adaptiveMode, const float epsilon,
-	const unsigned int seed, float** const out_bestQ, size_t* const out_bestQLen, float* const out_bestX,
-	float* const out_bestY, float* const out_bestF, size_t* const out_iterations, float* const out_achieved_epsilon)
-	noexcept {
+void AGP_Manip2D(const int nSegments, const bool variableLengths, const float minTheta,
+	const float targetX, const float targetY, const int peanoLevels,
+	const int maxIterPerBranch, const float r, const bool adaptiveMode,
+	const float epsilon, const unsigned int seed,
+	const float baseLength, const float stretchFactor,
+	float** const out_bestQ, size_t* const out_bestQLen, float* const out_bestX,
+	float* const out_bestY, float* const out_bestF, size_t* const out_iterations,
+	float* const out_achieved_epsilon) noexcept {
 	Slab* const __restrict slab = tls.local();
 	slab->current = slab->base;
 	while (g_world->iprobe(boost::mpi::any_source, 0)) {
@@ -1684,9 +1696,11 @@ void AGP_Manip2D(const int nSegments, const bool variableLengths, const float mi
 	}
 	if (variableLengths) {
 		i = 0;
+		const float lengthLower = baseLength / stretchFactor;
+		const float lengthUpper = baseLength * stretchFactor;
 		while (i < nSegments) {
-			low.emplace_back(0.5f);
-			high.emplace_back(2.0f);
+			low.emplace_back(lengthLower);
+			high.emplace_back(lengthUpper);
 			++i;
 		}
 	}
@@ -1847,6 +1861,31 @@ extern "C" __declspec(dllexport) __declspec(noalias) __forceinline int AgpInit(c
 		new (&gActiveMap) Peano2DMap(peanoLevel, a, b, c, d, rank & 3);
 	}
 	g_mc.baseSeed = fmaf(0x9E3779B9u, static_cast<float>(rank), 0x9E3779B9u);
+	if (rank == 0) {
+		wchar_t buf[MAX_PATH]{};
+		GetModuleFileNameW(nullptr, buf, MAX_PATH);
+		std::wstring ws(buf);
+		auto pos = ws.find_last_of(L"\\/");
+		if (pos != std::wstring::npos) ws.resize(pos);
+		int n = WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, nullptr, 0, nullptr, nullptr);
+		g_exeDirCache.resize(n, '\0');
+		WideCharToMultiByte(CP_UTF8, 0, ws.c_str(), -1, g_exeDirCache.data(), n, nullptr, nullptr);
+		if (!g_exeDirCache.empty() && g_exeDirCache.back() == '\0') g_exeDirCache.pop_back();
+
+		g_pyInterpreter = new pybind11::scoped_interpreter{};
+
+		pybind11::module_ sys = pybind11::module_::import("sys");
+		pybind11::list path = sys.attr("path");
+		const std::string& exeDir = g_exeDirCache;
+
+		path.attr("insert")(0, pybind11::str(exeDir + "\\env\\Lib\\site-packages"));
+		path.attr("insert")(0, pybind11::str(exeDir + "\\env\\Scripts"));
+		path.attr("insert")(0, pybind11::str(exeDir + "\\env"));
+		path.attr("append")(pybind11::str(exeDir));
+
+		pybind11::module_::import("warnings").attr("filterwarnings")("ignore");
+		g_pyOptimizerBridge = new pybind11::module_(pybind11::module_::import("optimizer_bridge"));
+	}
 	return rank;
 }
 
@@ -2110,7 +2149,7 @@ void AGP_2D(const float N, const float global_iterations, const float a, const f
 						RastriginFunc(d2[0], d2[1]), RastriginFunc(d2[2], d2[3]), 2.0f);
 					injected->ChangeCharacteristic(m);
 					if (injected->R > 1.15f * top_ptr->R) {
-						const float k = stagnation ? fmaf(0.5819767068693265f, expm1f(p), 0.3f) : fmaf(0.3491860241215959f, expm1f(p), 0.6f);
+						const float k = stagnation ? fmaf(0.5819767068693265f, (fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) - 1.0f), 0.3f) : fmaf(0.3491860241215959f, (fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) - 1.0f), 0.6f);
 						injected->R = d2[4] * k;
 						R.emplace_back(injected);
 						std::push_heap(R.begin(), R.end(), ComparePtr1D);
@@ -2119,7 +2158,7 @@ void AGP_2D(const float N, const float global_iterations, const float a, const f
 				++ii;
 			}
 		}
-		const int T = static_cast<int>(fmaf(-expm1f(p), 264.0f, 277.0f));
+		const int T = static_cast<int>(fmaf(-(fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, fmaf(p * 0.69314718055994530941723212145818f, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) - 1.0f), 264.0f, 277.0f));
 		const bool want_term = interval_len < epsilon || counter == static_cast<int>(global_iterations);
 		if (!(++counter % T) || stagnation) {
 			if (!want_term) {
@@ -2253,28 +2292,34 @@ void AGP_2D(const float N, const float global_iterations, const float a, const f
 	}
 }
 
-__declspec(align(16)) struct RunParams final {
-	int nSegments;
-	unsigned varLen;
-	float minTheta;
-	float tx, ty;
-	int levels;
-	int maxIter;
-	float r;
-	unsigned adaptive;
-	float eps;
-	unsigned seed;
+__declspec(align(16)) struct RunParams final sealed{
+		int nSegments;
+		unsigned varLen;
+		float minTheta;
+		float tx, ty;
+		int levels;
+		int maxIter;
+		float r;
+		unsigned adaptive;
+		float eps;
+		unsigned seed;
+		float baseLength;
+		float stretchFactor;
 
-	template<typename Archive>
-	void serialize(Archive& ar, const unsigned int) {
-		ar& nSegments& varLen& minTheta& tx& ty
-			& levels& maxIter& r& adaptive& eps& seed;
-	}
+		template<typename Archive>
+		void serialize(Archive& ar, const unsigned int) {
+				ar& nSegments& varLen& minTheta& tx& ty
+						& levels& maxIter& r& adaptive& eps& seed
+						& baseLength& stretchFactor;
+		}
 };
 
 extern "C" __declspec(dllexport) __declspec(noalias) __forceinline
-void AgpStartManipND(const int nSegments, const bool variableLengths, const float minTheta, const float targetX, const float targetY,
-	const int peanoLevels, const int maxIterPerBranch, const float r, const bool adaptiveMode, const float epsilon, const unsigned int seed) noexcept {
+void AgpStartManipND(const int nSegments, const bool variableLengths, const float minTheta,
+	const float targetX, const float targetY, const int peanoLevels,
+	const int maxIterPerBranch, const float r, const bool adaptiveMode,
+	const float epsilon, const unsigned int seed,
+	const float baseLength, const float stretchFactor) noexcept {
 	RunParams p;
 	p.nSegments = nSegments;
 	p.varLen = static_cast<unsigned>(variableLengths);
@@ -2287,6 +2332,8 @@ void AgpStartManipND(const int nSegments, const bool variableLengths, const floa
 	p.adaptive = static_cast<unsigned>(adaptiveMode);
 	p.eps = epsilon;
 	p.seed = seed;
+	p.baseLength = baseLength;
+	p.stretchFactor = stretchFactor;
 	int i = 1;
 	const int world = g_world->size();
 	while (i < world) {
@@ -2305,7 +2352,10 @@ extern "C" __declspec(dllexport) __declspec(noalias) __forceinline void AgpWaitS
 	while (true) {
 		if (g_world->iprobe(0, 1)) {
 			g_world->recv(0, 1, p);
-			AGP_Manip2D(p.nSegments, static_cast<bool>(p.varLen), p.minTheta, p.tx, p.ty, p.levels, p.maxIter, p.r, static_cast<bool>(p.adaptive), p.eps, p.seed, &q, &qlen, &bx, &by, &bf, &oi, &oa);
+			AGP_Manip2D(p.nSegments, static_cast<bool>(p.varLen), p.minTheta, p.tx, p.ty,
+				p.levels, p.maxIter, p.r, static_cast<bool>(p.adaptive), p.eps, p.seed,
+				p.baseLength, p.stretchFactor,
+				&q, &qlen, &bx, &by, &bf, &oi, &oa);
 		}
 		Sleep(0);
 	}
@@ -2335,4 +2385,102 @@ extern "C" __declspec(dllexport) __declspec(noalias) __forceinline void AgpStart
 
 extern "C" __declspec(dllexport) __declspec(noalias) __forceinline void AGP_Free(float* const p) noexcept {
 	CoTaskMemFree(p);
+}
+
+extern "C" __declspec(dllexport) __declspec(noalias)
+void RunPythonOptimization(const char* const backend,
+	const int n_seg,
+	const bool var_len,
+	const float min_theta,
+	const float tx,
+	const float ty,
+	const int levels,
+	const int max_iter,
+	const float r_param,
+	const float eps,
+	const bool adaptive,
+	const float baseLength,
+	const float stretchFactor,
+	float* const __restrict out_bestF,
+	float* const __restrict out_bestX,
+	float* const __restrict out_bestY,
+	float* const __restrict out_angles,
+	float* const __restrict out_lengths,
+	int* const __restrict out_iterations,
+	float* const __restrict out_eps,
+	float* const __restrict out_micros) noexcept {
+	pybind11::gil_scoped_acquire gil;
+	pybind11::dict result;
+
+	if (backend && strcmp(backend, "optuna") == 0) {
+		result = (*g_pyOptimizerBridge).attr("run_optuna")(n_seg,
+			var_len,
+			min_theta,
+			tx,
+			ty,
+			max_iter,
+			baseLength,
+			stretchFactor);
+	}
+	else {
+		result = (*g_pyOptimizerBridge).attr("run_iopt")(n_seg,
+			var_len,
+			min_theta,
+			tx,
+			ty,
+			levels,
+			max_iter,
+			r_param,
+			eps,
+			adaptive,
+			baseLength,
+			stretchFactor);
+	}
+
+	*out_bestF = result["BEST_F"].cast<float>();
+	*out_bestX = result["BEST_X"].cast<float>();
+	*out_bestY = result["BEST_Y"].cast<float>();
+	*out_iterations = result["ITERATIONS"].cast<int>();
+	*out_eps = result["EPS"].cast<float>();
+	*out_micros = result["TIME"].cast<float>();
+
+	std::vector<float> angles_vec = result["ANGLES"].cast<std::vector<float>>();
+	std::vector<float> lengths_vec = result["LENGTHS"].cast<std::vector<float>>();
+
+	const size_t n = static_cast<size_t>(n_seg);
+
+	if (out_angles) {
+		const size_t m = angles_vec.size();
+		const size_t limit = m < n ? m : n;
+		const float* const __restrict src = angles_vec.data();
+		size_t i = 0;
+#pragma loop ivdep
+		while (i < limit) {
+			out_angles[i] = src[i];
+			++i;
+		}
+	}
+
+	if (out_lengths) {
+		if (var_len) {
+			const size_t mL = lengths_vec.size();
+			const size_t limitL = mL < n ? mL : n;
+			const float* const __restrict srcL = lengths_vec.data();
+			size_t j = 0;
+#pragma loop ivdep
+			while (j < limitL) {
+				out_lengths[j] = srcL[j];
+				++j;
+			}
+		}
+		else {
+			const float one = 1.0f;
+			size_t j = 0;
+#pragma loop ivdep
+			while (j < n) {
+				out_lengths[j] = one;
+				++j;
+			}
+		}
+	}
 }

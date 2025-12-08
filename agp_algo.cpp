@@ -231,8 +231,7 @@ __declspec(align(16)) struct Interval1D final sealed{
 		}
 
 		__declspec(noalias) __forceinline void ChangeCharacteristic(const float _m) noexcept {
-				const float inv_m = 1.0f / _m;
-				R = fmaf(inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
+				R = fmaf(1.0f / _m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
 		}
 };
 
@@ -309,8 +308,8 @@ static __declspec(noalias) __forceinline void RecomputeR_AffineM_AVX2_1D(Interva
 	}
 	while (i < n) {
 		const Interval1D* const p = arr[i];
-		const float mi = fmaf(GF, (p->x2 - p->x1), p->M * alpha);
-		arr[i]->R = fmaf((1.0f / mi) * p->quadratic_term, 1.0f, fmaf(mi, p->N_factor, p->ordinate_factor));
+		const float mi = fmaf(GF, fmaf(-p->x1, 1.0f, p->x2), fmaf(p->M, alpha, 0.0f));
+		arr[i]->R = fmaf(1.0f / mi, p->quadratic_term, fmaf(mi, p->N_factor, p->ordinate_factor));
 		++i;
 	}
 }
@@ -330,20 +329,19 @@ __declspec(align(16)) struct IntervalND final sealed{
 		}
 
 		__declspec(noalias) __forceinline IntervalND(const float _x1, const float _x2, const float _y1, const float _y2) noexcept
-				: x1(_x1), x2(_x2), y1(_y1), y2(_y2), delta_y(_y2 - _y1), ordinate_factor(-(y1 + y2) * 2.0f),
+				: x1(_x1), x2(_x2), y1(_y1), y2(_y2), delta_y(fmaf(_y2, 1.0f, -_y1)), ordinate_factor(fmaf(fmaf(-y1, 1.0f, -y2), 2.0f, 0.0f)),
 				N_factor(0), quadratic_term(0), M(0), R(0), i1(0), i2(0), diam(0), span_level(0) {
 		}
 
 		__declspec(noalias) __forceinline void compute_span_level(const struct MortonND& map) noexcept;
 		__declspec(noalias) __forceinline void set_metric(const float d_alpha) noexcept {
 				N_factor = d_alpha;
-				quadratic_term = (1.0f / N_factor) * delta_y * delta_y;
-				M = fabsf(delta_y) / N_factor;
+				quadratic_term = fmaf(1.0f / N_factor, fmaf(delta_y, delta_y, 0.0f), 0.0f);
+				M = fmaf(1.0f / N_factor, fabsf(delta_y), 0.0f);
 		}
 
 		__declspec(noalias) __forceinline void ChangeCharacteristic(const float _m) noexcept {
-				const float inv_m = 1.0f / _m;
-				R = fmaf(inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
+				R = fmaf(1.0f / _m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
 		}
 };
 
@@ -420,8 +418,8 @@ static __declspec(noalias) __forceinline void RecomputeR_AffineM_AVX2_ND(Interva
 	}
 	while (i < n) {
 		const IntervalND* const p = arr[i];
-		const float mi = fmaf(GF, (p->x2 - p->x1), p->M * alpha);
-		arr[i]->R = fmaf((1.0f / mi) * p->quadratic_term, 1.0f, fmaf(mi, p->N_factor, p->ordinate_factor));
+		const float mi = fmaf(GF, fmaf(-p->x1, 1.0f, p->x2), fmaf(p->M, alpha, 0.0f));
+		arr[i]->R = fmaf(1.0f / mi, p->quadratic_term, fmaf(mi, p->N_factor, p->ordinate_factor));
 		++i;
 	}
 }
@@ -430,86 +428,87 @@ static __declspec(noalias) __forceinline float fast_pow_int(const float v, const
 	float r;
 	switch (n) {
 	case 3: {
-		const float v2 = v * v;
-		r = v2 * v;
+		const float v2 = fmaf(v, v, 0.0f);
+		r = fmaf(v2, v, 0.0f);
 	} break;
 	case 4: {
-		const float v2 = v * v;
-		r = v2 * v2;
+		const float v2 = fmaf(v, v, 0.0f);
+		r = fmaf(v2, v2, 0.0f);
 	} break;
 	case 5: {
-		const float v2 = v * v;
-		r = v2 * v2 * v;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		r = fmaf(fmaf(v4, v2, 0.0f), v, 0.0f);
 	} break;
 	case 6: {
-		const float v2 = v * v;
-		const float v4 = v2 * v2;
-		r = v4 * v2;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		r = fmaf(v4, v2, 0.0f);
 	} break;
 	case 7: {
-		const float v2 = v * v;
-		const float v4 = v2 * v2;
-		r = v4 * v2 * v;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		r = fmaf(fmaf(v4, v2, 0.0f), v, 0.0f);
 	} break;
 	case 8: {
-		const float v2 = v * v;
-		const float v4 = v2 * v2;
-		r = v4 * v4;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		r = fmaf(v4, v4, 0.0f);
 	} break;
 	case 9: {
-		const float v3 = v * v * v;
-		const float v6 = v3 * v3;
-		r = v6 * v3;
+		const float v3 = fmaf(fmaf(v, v, 0.0f), v, 0.0f);
+		const float v6 = fmaf(v3, v3, 0.0f);
+		r = fmaf(v6, v3, 0.0f);
 	} break;
 	case 10: {
-		const float v2 = v * v;
-		const float v4 = v2 * v2;
-		const float v8 = v4 * v4;
-		r = v8 * v2;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		const float v8 = fmaf(v4, v4, 0.0f);
+		r = fmaf(v8, v2, 0.0f);
 	} break;
 	case 11: {
-		const float v2 = v * v;
-		const float v4 = v2 * v2;
-		const float v8 = v4 * v4;
-		r = v8 * v2 * v;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		const float v8 = fmaf(v4, v4, 0.0f);
+		r = fmaf(fmaf(v8, v2, 0.0f), v, 0.0f);
 	} break;
 	case 12: {
-		const float v3 = v * v * v;
-		const float v6 = v3 * v3;
-		r = v6 * v6;
+		const float v3 = fmaf(fmaf(v, v, 0.0f), v, 0.0f);
+		const float v6 = fmaf(v3, v3, 0.0f);
+		r = fmaf(v6, v6, 0.0f);
 	} break;
 	case 13: {
-		const float v3 = v * v * v;
-		const float v6 = v3 * v3;
-		r = v6 * v6 * v;
+		const float v3 = fmaf(fmaf(v, v, 0.0f), v, 0.0f);
+		const float v6 = fmaf(v3, v3, 0.0f);
+		r = fmaf(fmaf(v6, v6, 0.0f), v, 0.0f);
 	} break;
 	case 14: {
-		const float v7 = v * v * v * v * v * v * v;
-		r = v7 * v7;
+		const float v7 = fmaf(fmaf(fmaf(fmaf(fmaf(fmaf(v, v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f);
+		r = fmaf(v7, v7, 0.0f);
 	} break;
 	case 15: {
-		const float v7 = v * v * v * v * v * v * v;
-		r = v7 * v7 * v;
+		const float v7 = fmaf(fmaf(fmaf(fmaf(fmaf(fmaf(v, v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f);
+		r = fmaf(fmaf(v7, v7, 0.0f), v, 0.0f);
 	} break;
 	default: {
-		const float v2 = v * v;
-		const float v4 = v2 * v2;
-		const float v8 = v4 * v4;
-		r = v8 * v8;
+		const float v2 = fmaf(v, v, 0.0f);
+		const float v4 = fmaf(v2, v2, 0.0f);
+		const float v8 = fmaf(v4, v4, 0.0f);
+		r = fmaf(v8, v8, 0.0f);
 	}
 	}
 	return r;
 }
 
 static __declspec(noalias) __forceinline float step(const float _m, const float x1, const float x2, const float y1, const float y2, const float _N, const float _r) noexcept {
-	const float diff = y2 - y1;
+	const float diff = fmaf(y2, 1.0f, -y1);
 	const unsigned sign_mask = ((*reinterpret_cast<const unsigned*>(&diff)) & 0x80000000u) ^ 0x80000000u;
 	const float sign_mult = *reinterpret_cast<const float*>(&sign_mask);
 	if (_N == 1.0f)
-		return fmaf(-(1.0f / _m), diff, x1 + x2) * 0.5f;
+		return fmaf(fmaf(-(1.0f / _m), diff, x1 + x2), 0.5f, 0.0f);
 	if (_N == 2.0f)
-		return fmaf((1.0f / (_m * _m)) * sign_mult * diff * diff * _r, 1.0f, x1 + x2) * 0.5f;
-	return fmaf((1.0f / fast_pow_int(_m, _N)) * sign_mult * fast_pow_int(fabsf(diff), _N) * _r, 1.0f, x1 + x2) * 0.5f;
+		return fmaf(fmaf(fmaf(fmaf(1.0f / fmaf(_m, _m, 0.0f), sign_mult, 0.0f), fmaf(fmaf(diff, diff, 0.0f), _r, 0.0f), 0.0f), 1.0f, fmaf(x1, 1.0f, x2)), 0.5f, 0.0f);
+	return fmaf(fmaf(fmaf(fmaf(fmaf(1.0f / fast_pow_int(_m, _N), sign_mult, 0.0f), fast_pow_int(fabsf(diff), _N), 0.0f), _r, 0.0f), 1.0f, fmaf(x1, 1.0f, x2)), 0.5f, 0.0f);
 }
 
 __declspec(align(16)) struct MortonCachePerRank final sealed{
@@ -624,8 +623,8 @@ __declspec(align(16)) struct MortonND final sealed{
 						const int pd = perm[d];
 						const unsigned long long varying = (i1 ^ i2) & pextMask[d];
 						const int nfree_hi = _mm_popcnt_u64(varying);
-						const int nfree_total = nfree_hi + (levels - chunk_bits[0]);
-						const float range = step[pd] * (ldexpf(1.0f, nfree_total) - 1.0f);
+						const int nfree_total = nfree_hi + levels - chunk_bits[0];
+						const float range = fmaf(step[pd], fmaf(ldexpf(1.0f, nfree_total), 1.0f, -1.0f), 0.0f);
 						s2 = fmaf(range, range, s2);
 						++d;
 				}
@@ -703,7 +702,7 @@ __declspec(align(16)) struct MortonND final sealed{
 						++d;
 				}
 				if (use_gray) idx0 = gray_decode(idx0);
-				return (static_cast<float>(idx0) + 0.5f) / static_cast<float>(scale);
+				return fmaf(1.0f / static_cast<float>(scale), fmaf(static_cast<float>(idx0), 1.0f, 0.5f), 0.0f);
 		}
 };
 
@@ -773,14 +772,14 @@ __declspec(align(16)) struct ManipCost final sealed{
 				while (i < n) {
 						const float theta = th[i];
 						const float ai = fabsf(theta);
-						const float v = ai - minTheta;
+						const float v = fmaf(ai, 1.0f, -minTheta);
 						if (v > 0.0f) {
-								const float scale = sharpScale * v;
-								const float arg = scale * 0.69314718055994530941723212145818f;
+								const float scale = fmaf(sharpScale, v, 0.0f);
+								const float arg = fmaf(scale, 0.69314718055994530941723212145818f, 0.0f);
 								const float exp2_val = fmaf(arg, fmaf(arg, fmaf(arg, fmaf(arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
-								penC = fmaf(sharpW, exp2_val - 1.0f, penC);
+								penC = fmaf(sharpW, fmaf(exp2_val, 1.0f, -1.0f), penC);
 						}
-						const float t = -theta * archBiasK;
+						const float t = fmaf(-theta, archBiasK, 0.0f);
 						float sp;
 						if (t > 10.0f) {
 								sp = t;
@@ -793,11 +792,11 @@ __declspec(align(16)) struct ManipCost final sealed{
 						++i;
 				}
 
-				const float dx = x - targetX, dy = y - targetY;
+				const float dx = fmaf(x, 1.0f, -targetX), dy = fmaf(y, 1.0f, -targetY);
 				const float dist = sqrtf(fmaf(dx, dx, dy * dy));
 				out_x = x;
 				out_y = y;
-				return dist + penC + archPen;
+				return fmaf(dist, 1.0f, fmaf(penC, 1.0f, archPen));
 		}
 };
 
@@ -1068,11 +1067,11 @@ static __declspec(noalias) void agp_run_branch_mpi(
 					float gpen = 0.0f;
 					{
 						const float ai = fabsf(q_local[i]);
-						const float v = ai - cost.minTheta;
+						const float v = fmaf(ai, 1.0f, -cost.minTheta);
 						if (v > 0.0f) {
-							const float scale_arg = (2.0f / fmaf(cost.minTheta, 1.0f, 1.0e-6f)) * v * 0.69314718055994530941723212145818f;
+							const float scale_arg = fmaf(fmaf(2.0f, 1.0f / fmaf(cost.minTheta, 1.0f, 1.0e-6f), 0.0f), fmaf(v, 0.69314718055994530941723212145818f, 0.0f), 0.0f);
 							const float exp_val = fmaf(scale_arg, fmaf(scale_arg, fmaf(scale_arg, fmaf(scale_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
-							const float dpen_dtheta = cost.sharpW * exp_val * (0.69314718055994530941723212145818f * (2.0f / (cost.minTheta + 1.0e-6f))) * copysignf(1.0f, q_local[i]);
+							const float dpen_dtheta = fmaf(cost.sharpW, fmaf(exp_val, fmaf(0.69314718055994530941723212145818f, fmaf(2.0f, 1.0f / fmaf(cost.minTheta, 1.0f, 1.0e-6f), 0.0f), 0.0f), 0.0f), copysignf(1.0f, q_local[i]));
 							gpen = fmaf(dpen_dtheta, 1.0f, gpen);
 						}
 					}
@@ -1081,20 +1080,16 @@ static __declspec(noalias) void agp_run_branch_mpi(
 						const float exp_arg = -tsg;
 						const float exp_val = fmaf(exp_arg, fmaf(exp_arg, fmaf(exp_arg, fmaf(exp_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
 						const float sig = 1.0f / fmaf(exp_val, 1.0f, 1.0f);
-						gpen = fmaf(-(cost.archBiasW * cost.archBiasK), sig, gpen);
+						gpen = fmaf(-fmaf(cost.archBiasW, cost.archBiasK, 0.0f), sig, gpen);
 					}
 
 					const float g = fmaf(fmaf(dx, -sum_s[i], fmaf(dy, sum_c[i], 0.0f)), 1.0f / dist, gpen);
 					q_try[i] = fmaf(-eta, g, q_local[i]);
 
-					const float lo0 = -1.0471975511965977461542144610932f;
-					const float hi0 = 2.6179938779914943653855361527329f;
-					const float lo = -2.6179938779914943653855361527329f;
+					const float lo = (i == 0) ? -1.0471975511965977461542144610932f
+						: -2.6179938779914943653855361527329f;
 					const float hi = 2.6179938779914943653855361527329f;
-					const float Lb = (i == 0) ? lo0 : lo;
-					const float Hb = (i == 0) ? hi0 : hi;
-					if (q_try[i] < Lb) q_try[i] = Lb;
-					else if (q_try[i] > Hb) q_try[i] = Hb;
+					q_try[i] = fminf(fmaxf(q_try[i], lo), hi);
 					++i;
 				}
 				if (cost.variableLen) {
@@ -1375,7 +1370,7 @@ static __declspec(noalias) void agp_run_branch_mpi(
 				const float progress = fmaf(-inv_thr03, dmax, 1.0f);
 				const float alpha = fmaf(progress, progress, 0.0f);
 				const float beta = fmaf(-alpha, 1.0f, 2.0f);
-				const float MULT = (1.0f / dmax) * Mmax;
+				const float MULT = fmaf(1.0f / dmax, Mmax, 0.0f);
 				const float global_coeff = fmaf(MULT, r_eff, -MULT);
 				const float GF = fmaf(beta, global_coeff, 0.0f);
 				L->ChangeCharacteristic(fmaf(GF, len1, fmaf(L->M, alpha, 0.0f)));

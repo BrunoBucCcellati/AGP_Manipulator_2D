@@ -999,8 +999,6 @@ __declspec(align(16)) struct MortonND final sealed{
 							? (baseC - 1ull)
 							: (unsigned long long)scaled;
 
-			const float u = scaled - (float)idxc;
-
 			if (use_gray) {
 				idxc = gray_encode(idxc);
 			}

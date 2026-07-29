@@ -3,15 +3,7 @@
 //============================================================
 //                     TUNING PARAMETERS
 //============================================================
-static constexpr int    hj_period = 2;
-static constexpr int    hj_phase = 0;
-static constexpr bool   hj_plus_first = true;
-static constexpr bool   hj_opportunistic_axis = true;
-static constexpr bool   hj_use_pattern = true;
-static constexpr bool   hj_expand_delta_on_success = false;
-
 static constexpr float  hj_init_delta_frac = 0.07f;
-static constexpr float  hj_init_delta_abs = 0.0025f;
 static constexpr float  hj_min_delta = 1e-4f;
 static constexpr float  hj_shrink_factor = 0.55f;
 static constexpr float  hj_pattern_gain = 0.7f;
@@ -37,10 +29,7 @@ static constexpr int            AGP_MAX_SEGMENTS_TRAJ = AGP_MAX_FULL_DIM / 2;
 static constexpr unsigned       MAX_OBSTACLES = 4u;
 static constexpr unsigned       AGP_MULTI_MAX_COUNT = 7u;
 static constexpr size_t         AGP_INTERVAL_SLAB_BYTES = 67108864u;
-static constexpr int            AGP_MAX_SEED_STRIDE = 64;
 static constexpr int            AGP_MAX_GENERATED_SEEDS = 64;
-static constexpr int            AGP_SOBOL_BASE_DIMS = AGP_MAX_FULL_DIM;
-static constexpr float          AGP_T_EPS = 1e-7f;
 
 //============================================================
 //                     SIMD / MATH CONSTANTS
@@ -70,8 +59,9 @@ static __declspec(align(16)) const __m128   vpi4 = _mm_set1_ps(3.141592653589793
 static __declspec(align(16)) const __m128   vnpi4 = _mm_set1_ps(-3.14159265358979323846f);
 static __declspec(align(16)) const __m128   vtwo_pi4 = _mm_set1_ps(6.28318530717958647692f);
 
-static constexpr float  PI = 3.1415926535897932384626433832795f;
-static constexpr float  TWO_PI = 6.2831853071795864769252867665590f;
+static constexpr float  TWO_PI = 6.28318530717958647692f;
+static constexpr float  PI = 3.14159265358979323846f;
+static constexpr float  PI_2 = 1.57079632679489661923f;
 
 //============================================================
 //                     MATH MACROS & UTILITIES
@@ -270,21 +260,17 @@ float step(const float _m,
 	const unsigned idx1,
 	const unsigned idx2) noexcept
 {
+	const float sum = x1 + x2;
+
 	if (idx1 != idx2)
-		return fmaf(x1 + x2, 0.5f, 0.0f);
+		return fmaf(sum, 0.5f, 0.0f);
 
 	const float diff = fmaf(y2, 1.0f, -y1);
+	const float ad = fabsf(diff);
 	const unsigned sign_bits =
 		((*reinterpret_cast<const unsigned*>(&diff)) & 0x80000000u) ^ 0x3f800000u;
 	const float sign_mult = *reinterpret_cast<const float*>(&sign_bits);
-
-	const float sum = x1 + x2;
 	const float invm = 1.0f / _m;
-
-	if (dim == 1u)
-		return fmaf(fmaf(-invm, diff, sum), 0.5f, 0.0f);
-
-	const float ad = fabsf(diff);
 
 	if (dim == 2u)
 	{
@@ -319,8 +305,6 @@ float agp_clamp_unit_open_scalar(float t) noexcept
 //============================================================
 static const boost::mpi::environment* g_env = nullptr;
 static boost::mpi::communicator* g_world = nullptr;
-static const pybind11::scoped_interpreter* g_pyInterpreter = nullptr;
-static const pybind11::module* g_pyOptimizerBridge = nullptr;
 
 //============================================================
 //                     TRAJECTORY COUNTER
@@ -519,20 +503,18 @@ struct MortonND final
 	}
 
 	template<int D>
-	__forceinline void map01ToPoint_t(const float t, float* __restrict out) const noexcept
+	__forceinline void map01ToPoint_t(float t, float* __restrict out) const noexcept
 	{
-		float u = agp_clamp_unit_open_scalar(t);
-
 		__declspec(align(32)) unsigned long long accBits[AGP_MAX_FULL_DIM]{};
 
 		int c = 0;
 		while (c < chunks)
 		{
 			const float baseCf = chunk_basef[static_cast<size_t>(c)];
-			u = fmaf(u, baseCf, 0.0f);
+			t *= baseCf;
 
-			unsigned long long idxc = static_cast<unsigned long long>(u);
-			u = fmaf(-static_cast<float>(idxc), 1.0f, u);
+			unsigned long long idxc = static_cast<unsigned long long>(t);
+			t = fmaf(-static_cast<float>(idxc), 1.0f, t);
 
 			idxc = gray_encode(idxc);
 
@@ -614,7 +596,7 @@ struct MortonND final
 				0.0f);
 		}
 
-		return agp_clamp_unit_open_scalar(t);
+		return t;
 	}
 
 	__declspec(noalias) __forceinline MortonND(
@@ -714,12 +696,6 @@ struct MortonND final
 
 	__declspec(noalias) __forceinline float block_diameter(unsigned long long i1, unsigned long long i2) const noexcept
 	{
-		if (i1 > i2)
-		{
-			const unsigned long long t = i1;
-			i1 = i2;
-			i2 = t;
-		}
 		const unsigned long long varying = i1 ^ i2;
 
 		switch (dim)
@@ -768,26 +744,24 @@ struct MortonND final
 			}
 		}
 
-		t = fmaf(-t, 1.0f, 1.0f);
-
 		switch (dim)
 		{
-		case  1: map01ToPoint_t< 1>(t, out); return;
-		case  2: map01ToPoint_t< 2>(t, out); return;
-		case  3: map01ToPoint_t< 3>(t, out); return;
-		case  4: map01ToPoint_t< 4>(t, out); return;
-		case  5: map01ToPoint_t< 5>(t, out); return;
-		case  6: map01ToPoint_t< 6>(t, out); return;
-		case  7: map01ToPoint_t< 7>(t, out); return;
-		case  8: map01ToPoint_t< 8>(t, out); return;
-		case  9: map01ToPoint_t< 9>(t, out); return;
-		case 10: map01ToPoint_t<10>(t, out); return;
-		case 11: map01ToPoint_t<11>(t, out); return;
-		case 12: map01ToPoint_t<12>(t, out); return;
-		case 13: map01ToPoint_t<13>(t, out); return;
-		case 14: map01ToPoint_t<14>(t, out); return;
-		case 15: map01ToPoint_t<15>(t, out); return;
-		default: map01ToPoint_t<16>(t, out); return;
+		case  1: map01ToPoint_t< 1>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  2: map01ToPoint_t< 2>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  3: map01ToPoint_t< 3>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  4: map01ToPoint_t< 4>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  5: map01ToPoint_t< 5>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  6: map01ToPoint_t< 6>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  7: map01ToPoint_t< 7>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  8: map01ToPoint_t< 8>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case  9: map01ToPoint_t< 9>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case 10: map01ToPoint_t<10>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case 11: map01ToPoint_t<11>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case 12: map01ToPoint_t<12>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case 13: map01ToPoint_t<13>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case 14: map01ToPoint_t<14>(fmaf(-t, 1.0f, 1.0f), out); return;
+		case 15: map01ToPoint_t<15>(fmaf(-t, 1.0f, 1.0f), out); return;
+		default: map01ToPoint_t<16>(fmaf(-t, 1.0f, 1.0f), out); return;
 		}
 	}
 
@@ -818,22 +792,22 @@ struct MortonND final
 
 		switch (dim)
 		{
-		case  1: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 1>(q), 1.0f, 1.0f));
-		case  2: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 2>(q), 1.0f, 1.0f));
-		case  3: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 3>(q), 1.0f, 1.0f));
-		case  4: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 4>(q), 1.0f, 1.0f));
-		case  5: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 5>(q), 1.0f, 1.0f));
-		case  6: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 6>(q), 1.0f, 1.0f));
-		case  7: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 7>(q), 1.0f, 1.0f));
-		case  8: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 8>(q), 1.0f, 1.0f));
-		case  9: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t< 9>(q), 1.0f, 1.0f));
-		case 10: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<10>(q), 1.0f, 1.0f));
-		case 11: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<11>(q), 1.0f, 1.0f));
-		case 12: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<12>(q), 1.0f, 1.0f));
-		case 13: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<13>(q), 1.0f, 1.0f));
-		case 14: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<14>(q), 1.0f, 1.0f));
-		case 15: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<15>(q), 1.0f, 1.0f));
-		default: return agp_clamp_unit_open_scalar(fmaf(-pointToT_t<16>(q), 1.0f, 1.0f));
+		case  1: return fmaf(-pointToT_t< 1>(q), 1.0f, 1.0f);
+		case  2: return fmaf(-pointToT_t< 2>(q), 1.0f, 1.0f);
+		case  3: return fmaf(-pointToT_t< 3>(q), 1.0f, 1.0f);
+		case  4: return fmaf(-pointToT_t< 4>(q), 1.0f, 1.0f);
+		case  5: return fmaf(-pointToT_t< 5>(q), 1.0f, 1.0f);
+		case  6: return fmaf(-pointToT_t< 6>(q), 1.0f, 1.0f);
+		case  7: return fmaf(-pointToT_t< 7>(q), 1.0f, 1.0f);
+		case  8: return fmaf(-pointToT_t< 8>(q), 1.0f, 1.0f);
+		case  9: return fmaf(-pointToT_t< 9>(q), 1.0f, 1.0f);
+		case 10: return fmaf(-pointToT_t<10>(q), 1.0f, 1.0f);
+		case 11: return fmaf(-pointToT_t<11>(q), 1.0f, 1.0f);
+		case 12: return fmaf(-pointToT_t<12>(q), 1.0f, 1.0f);
+		case 13: return fmaf(-pointToT_t<13>(q), 1.0f, 1.0f);
+		case 14: return fmaf(-pointToT_t<14>(q), 1.0f, 1.0f);
+		case 15: return fmaf(-pointToT_t<15>(q), 1.0f, 1.0f);
+		default: return fmaf(-pointToT_t<16>(q), 1.0f, 1.0f);
 		}
 	}
 };
@@ -917,10 +891,7 @@ void agp_clamp_avx2(float* __restrict q,
 static __declspec(noalias) __forceinline
 unsigned long long agp_t_to_firstchunk_idx_open(const MortonND& map, float t) noexcept
 {
-	const float u = agp_clamp_unit_open_scalar(
-		map.reverseTraversal
-		? fmaf(-t, 1.0f, 1.0f)
-		: t);
+	const float u = map.reverseTraversal ? fmaf(-t, 1.0f, 1.0f) : t;
 
 	unsigned long long idx;
 	if (map.scale <= 0x01000000ull)
@@ -928,8 +899,19 @@ unsigned long long agp_t_to_firstchunk_idx_open(const MortonND& map, float t) no
 	else
 		idx = static_cast<unsigned long long>(static_cast<double>(u) * static_cast<double>(map.scale));
 
-	if (idx >= map.scale) idx = map.scale - 1ull;
 	return idx;
+}
+
+static __declspec(noalias) __forceinline
+bool agp_can_have_positive_diameter(const MortonND& map, const float t1, const float t2) noexcept
+{
+	if (!static_cast<bool>(map.extra_levels))
+	{
+		const unsigned long long c1 = agp_t_to_firstchunk_idx_open(map, t1);
+		const unsigned long long c2 = agp_t_to_firstchunk_idx_open(map, t2);
+		return c1 != c2;
+	}
+	return true;
 }
 
 static __declspec(noalias) __forceinline
@@ -949,15 +931,10 @@ unsigned long long agp_bit_floor_u64(unsigned long long x) noexcept
 }
 
 static __declspec(noalias) __forceinline
-int agp_firstchunk_span_bits_open(const MortonND& map, float t1, float t2) noexcept
+int agp_firstchunk_span_bits_open(const unsigned long long c1, const unsigned long long c2) noexcept
 {
-	unsigned long long a = agp_t_to_firstchunk_idx_open(map, t1);
-	unsigned long long b = agp_t_to_firstchunk_idx_open(map, t2);
-	if (a > b) std::swap(a, b);
-
-	const unsigned long long diff = a ^ b;
+	const unsigned long long diff = c1 ^ c2;
 	if (!diff) return 0;
-
 	unsigned long msb = 0ul;
 	_BitScanReverse64(&msb, diff);
 	return static_cast<int>(msb) + 1;
@@ -966,13 +943,13 @@ int agp_firstchunk_span_bits_open(const MortonND& map, float t1, float t2) noexc
 static __declspec(noalias) __forceinline
 float agp_block_diameter_firstchunk_exact_open_t(const MortonND& map, float t1, float t2) noexcept
 {
-	if (t1 > t2) std::swap(t1, t2);
-	if (!(t1 < t2)) return 0.0f;
+	if (t1 == t2) return 0.0f;
 
 	unsigned long long a0 = agp_t_to_firstchunk_idx_open(map, t1);
 	unsigned long long b0 = agp_t_to_firstchunk_idx_open(map, t2);
 
-	if (a0 > b0) std::swap(a0, b0);
+	if (!static_cast<bool>(map.extra_levels))
+		return map.block_diameter(a0, b0);
 
 	__declspec(align(32)) unsigned long long minCell[AGP_MAX_FULL_DIM];
 	__declspec(align(32)) unsigned long long maxCell[AGP_MAX_FULL_DIM];
@@ -1216,7 +1193,6 @@ static __declspec(noalias) __forceinline float point_segment_distance_sq(float p
 	const float apx = fmaf(px, 1.0f, -ax);
 	const float apy = fmaf(py, 1.0f, -ay);
 	const float ab2 = fmaf(abx, abx, fmaf(aby, aby, 0.0f));
-	if (ab2 <= 1e-10f) return fmaf(apx, apx, fmaf(apy, apy, 0.0f));
 	const float t = fmaf(1.0f / ab2, fmaf(apx, abx, fmaf(apy, aby, 0.0f)), 0.0f);
 	const float clamped_t = agp_clamp_unit_open_scalar(t);
 	const float qx = fmaf(clamped_t, abx, ax);
@@ -1228,7 +1204,7 @@ static __declspec(noalias) __forceinline float point_segment_distance_sq(float p
 
 static __declspec(noalias) __forceinline float orient2d(float ax, float ay, float bx, float by, float cx, float cy) noexcept
 {
-	return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+	return fmaf(bx - ax, cy - ay, -(by - ay) * (cx - ax));
 }
 
 static __declspec(noalias) __forceinline bool on_segment(float ax, float ay, float bx, float by, float px, float py) noexcept
@@ -1512,7 +1488,7 @@ static __declspec(noalias) __forceinline float polyline_square_violation(
 			ob.minX, ob.minY, ob.maxX, ob.maxY
 		);
 		if (d2 < best) best = d2;
-		if (best <= 0.0f) break;
+		if (best < 0.0f) break;
 		++i;
 	}
 
@@ -1542,48 +1518,6 @@ static tbb::enumerable_thread_specific<Slab*> tls([]() noexcept
 		new (slab) Slab(memory, AGP_INTERVAL_SLAB_BYTES);
 		return slab;
 	});
-
-//============================================================
-//                     FLOAT UTILITIES
-//============================================================
-
-static __declspec(noalias) __forceinline
-float agp_nextup01(float x) noexcept
-{
-	unsigned u = *reinterpret_cast<unsigned*>(&x);
-	if (u == 0x3f800000u) return x;
-	if ((u & 0x7fffffffU) == 0u)
-	{
-		const unsigned one = 1u;
-		return *reinterpret_cast<const float*>(&one);
-	}
-	++u;
-	return *reinterpret_cast<float*>(&u);
-}
-
-static __declspec(noalias) __forceinline
-float agp_nextdown01(float x) noexcept
-{
-	unsigned u = *reinterpret_cast<unsigned*>(&x);
-	if ((u & 0x7fffffffU) == 0u) return x;
-	--u;
-	return *reinterpret_cast<float*>(&u);
-}
-
-static __declspec(noalias) __forceinline
-bool agp_force_strict_interior(float x1, float x2, float& t) noexcept
-{
-	const float lo = agp_nextup01(x1);
-	const float hi = agp_nextdown01(x2);
-
-	if (!(lo < hi))
-		return false;
-
-	if (!(t > lo)) t = lo;
-	else if (!(t < hi)) t = hi;
-
-	return true;
-}
 
 //============================================================
 //                     INTERVAL ND
@@ -2058,8 +1992,8 @@ void IntervalND::compute_span_level(const MortonND& map) noexcept
 
 __declspec(align(32)) struct TransitionGeomSample final
 {
-	alignas(32) float q[AGP_MAX_FULL_DIM]{};
-	float x = 0.0f, y = 0.0f, clearance = FLT_MAX;
+	alignas(32) float q[AGP_MAX_FULL_DIM];
+	float x, y, clearance;
 };
 
 //============================================================
@@ -2077,15 +2011,13 @@ __declspec(align(32)) struct ManipCost final
 	float               stretchFactor;
 	float               targetX;
 	float               targetY;
-	float               minTheta;
+	float               maxTheta;
 	unsigned            obstacleCount;
-	int                 constraintMode;
 	SquareObstacle      obstacles[MAX_OBSTACLES];
 	float               obstacleClearance;
 	int                 solveMode;
 
-	__declspec(align(32)) float referenceState[AGP_MAX_FULL_DIM]{};
-	__declspec(align(32)) float referencePrefixAngles[AGP_MAX_FULL_DIM]{};
+	__declspec(align(32)) float referenceState[AGP_MAX_FULL_DIM];
 
 	mutable TransitionGeomSample cached_start_sample;
 	mutable bool cached_start_valid = false;
@@ -2093,7 +2025,6 @@ __declspec(align(32)) struct ManipCost final
 	float               transitionCaptureWeight;
 	float               transitionEnergyWeight;
 	float               transitionLengthEnergyWeight;
-	float               transitionPrefixEnergyWeight;
 	float               transitionSweepPenaltyWeight;
 	float               transitionSweepPenaltyWeightLeaf;
 
@@ -2207,7 +2138,7 @@ __declspec(align(32)) struct ManipCost final
 		float* __restrict py) const noexcept
 	{
 		__declspec(align(32)) float phi[AGP_MAX_FULL_DIM], s_arr[AGP_MAX_FULL_DIM], c_arr[AGP_MAX_FULL_DIM];
-		float phi_acc = 0.0f;
+		float phi_acc = PI_2;
 		if constexpr (store)
 		{
 			px[0] = 0.0f;
@@ -2225,107 +2156,98 @@ __declspec(align(32)) struct ManipCost final
 	__declspec(noalias) __forceinline void compute_pose(const float* __restrict q, float& out_x, float& out_y,
 		float* __restrict px, float* __restrict py) const noexcept
 	{
-		const bool store = (px != nullptr) && (py != nullptr);
-		if (n <= 0)
+		const bool store = static_cast<bool>(px) && static_cast<bool>(py);
+		if (variableLen)
 		{
-			if (store) { px[0] = 0.0f; py[0] = 0.0f; }
-			out_x = out_y = 0.0f;
-			return;
-		}
-		if (static_cast<unsigned>(n) <= static_cast<unsigned>(AGP_MAX_FULL_DIM))
-		{
-			if (variableLen)
+			if (store)
 			{
-				if (store)
+				switch (n)
 				{
-					switch (n)
-					{
-					case  1: agp_compute_pose_fixedn< 1, true, true>(q, out_x, out_y, px, py); return;
-					case  2: agp_compute_pose_fixedn< 2, true, true>(q, out_x, out_y, px, py); return;
-					case  3: agp_compute_pose_fixedn< 3, true, true>(q, out_x, out_y, px, py); return;
-					case  4: agp_compute_pose_fixedn< 4, true, true>(q, out_x, out_y, px, py); return;
-					case  5: agp_compute_pose_fixedn< 5, true, true>(q, out_x, out_y, px, py); return;
-					case  6: agp_compute_pose_fixedn< 6, true, true>(q, out_x, out_y, px, py); return;
-					case  7: agp_compute_pose_fixedn< 7, true, true>(q, out_x, out_y, px, py); return;
-					case  8: agp_compute_pose_fixedn< 8, true, true>(q, out_x, out_y, px, py); return;
-					case  9: agp_compute_pose_fixedn< 9, true, true>(q, out_x, out_y, px, py); return;
-					case 10: agp_compute_pose_fixedn<10, true, true>(q, out_x, out_y, px, py); return;
-					case 11: agp_compute_pose_fixedn<11, true, true>(q, out_x, out_y, px, py); return;
-					case 12: agp_compute_pose_fixedn<12, true, true>(q, out_x, out_y, px, py); return;
-					case 13: agp_compute_pose_fixedn<13, true, true>(q, out_x, out_y, px, py); return;
-					case 14: agp_compute_pose_fixedn<14, true, true>(q, out_x, out_y, px, py); return;
-					case 15: agp_compute_pose_fixedn<15, true, true>(q, out_x, out_y, px, py); return;
-					default: agp_compute_pose_fixedn<16, true, true>(q, out_x, out_y, px, py); return;
-					}
-				}
-				else
-				{
-					switch (n)
-					{
-					case  1: agp_compute_pose_fixedn< 1, true, false>(q, out_x, out_y, px, py); return;
-					case  2: agp_compute_pose_fixedn< 2, true, false>(q, out_x, out_y, px, py); return;
-					case  3: agp_compute_pose_fixedn< 3, true, false>(q, out_x, out_y, px, py); return;
-					case  4: agp_compute_pose_fixedn< 4, true, false>(q, out_x, out_y, px, py); return;
-					case  5: agp_compute_pose_fixedn< 5, true, false>(q, out_x, out_y, px, py); return;
-					case  6: agp_compute_pose_fixedn< 6, true, false>(q, out_x, out_y, px, py); return;
-					case  7: agp_compute_pose_fixedn< 7, true, false>(q, out_x, out_y, px, py); return;
-					case  8: agp_compute_pose_fixedn< 8, true, false>(q, out_x, out_y, px, py); return;
-					case  9: agp_compute_pose_fixedn< 9, true, false>(q, out_x, out_y, px, py); return;
-					case 10: agp_compute_pose_fixedn<10, true, false>(q, out_x, out_y, px, py); return;
-					case 11: agp_compute_pose_fixedn<11, true, false>(q, out_x, out_y, px, py); return;
-					case 12: agp_compute_pose_fixedn<12, true, false>(q, out_x, out_y, px, py); return;
-					case 13: agp_compute_pose_fixedn<13, true, false>(q, out_x, out_y, px, py); return;
-					case 14: agp_compute_pose_fixedn<14, true, false>(q, out_x, out_y, px, py); return;
-					case 15: agp_compute_pose_fixedn<15, true, false>(q, out_x, out_y, px, py); return;
-					default: agp_compute_pose_fixedn<16, true, false>(q, out_x, out_y, px, py); return;
-					}
+				case  1: agp_compute_pose_fixedn< 1, true, true>(q, out_x, out_y, px, py); return;
+				case  2: agp_compute_pose_fixedn< 2, true, true>(q, out_x, out_y, px, py); return;
+				case  3: agp_compute_pose_fixedn< 3, true, true>(q, out_x, out_y, px, py); return;
+				case  4: agp_compute_pose_fixedn< 4, true, true>(q, out_x, out_y, px, py); return;
+				case  5: agp_compute_pose_fixedn< 5, true, true>(q, out_x, out_y, px, py); return;
+				case  6: agp_compute_pose_fixedn< 6, true, true>(q, out_x, out_y, px, py); return;
+				case  7: agp_compute_pose_fixedn< 7, true, true>(q, out_x, out_y, px, py); return;
+				case  8: agp_compute_pose_fixedn< 8, true, true>(q, out_x, out_y, px, py); return;
+				case  9: agp_compute_pose_fixedn< 9, true, true>(q, out_x, out_y, px, py); return;
+				case 10: agp_compute_pose_fixedn<10, true, true>(q, out_x, out_y, px, py); return;
+				case 11: agp_compute_pose_fixedn<11, true, true>(q, out_x, out_y, px, py); return;
+				case 12: agp_compute_pose_fixedn<12, true, true>(q, out_x, out_y, px, py); return;
+				case 13: agp_compute_pose_fixedn<13, true, true>(q, out_x, out_y, px, py); return;
+				case 14: agp_compute_pose_fixedn<14, true, true>(q, out_x, out_y, px, py); return;
+				case 15: agp_compute_pose_fixedn<15, true, true>(q, out_x, out_y, px, py); return;
+				default: agp_compute_pose_fixedn<16, true, true>(q, out_x, out_y, px, py); return;
 				}
 			}
 			else
 			{
-				if (store)
+				switch (n)
 				{
-					switch (n)
-					{
-					case  1: agp_compute_pose_fixedn< 1, false, true>(q, out_x, out_y, px, py); return;
-					case  2: agp_compute_pose_fixedn< 2, false, true>(q, out_x, out_y, px, py); return;
-					case  3: agp_compute_pose_fixedn< 3, false, true>(q, out_x, out_y, px, py); return;
-					case  4: agp_compute_pose_fixedn< 4, false, true>(q, out_x, out_y, px, py); return;
-					case  5: agp_compute_pose_fixedn< 5, false, true>(q, out_x, out_y, px, py); return;
-					case  6: agp_compute_pose_fixedn< 6, false, true>(q, out_x, out_y, px, py); return;
-					case  7: agp_compute_pose_fixedn< 7, false, true>(q, out_x, out_y, px, py); return;
-					case  8: agp_compute_pose_fixedn< 8, false, true>(q, out_x, out_y, px, py); return;
-					case  9: agp_compute_pose_fixedn< 9, false, true>(q, out_x, out_y, px, py); return;
-					case 10: agp_compute_pose_fixedn<10, false, true>(q, out_x, out_y, px, py); return;
-					case 11: agp_compute_pose_fixedn<11, false, true>(q, out_x, out_y, px, py); return;
-					case 12: agp_compute_pose_fixedn<12, false, true>(q, out_x, out_y, px, py); return;
-					case 13: agp_compute_pose_fixedn<13, false, true>(q, out_x, out_y, px, py); return;
-					case 14: agp_compute_pose_fixedn<14, false, true>(q, out_x, out_y, px, py); return;
-					case 15: agp_compute_pose_fixedn<15, false, true>(q, out_x, out_y, px, py); return;
-					default: agp_compute_pose_fixedn<16, false, true>(q, out_x, out_y, px, py); return;
-					}
+				case  1: agp_compute_pose_fixedn< 1, true, false>(q, out_x, out_y, px, py); return;
+				case  2: agp_compute_pose_fixedn< 2, true, false>(q, out_x, out_y, px, py); return;
+				case  3: agp_compute_pose_fixedn< 3, true, false>(q, out_x, out_y, px, py); return;
+				case  4: agp_compute_pose_fixedn< 4, true, false>(q, out_x, out_y, px, py); return;
+				case  5: agp_compute_pose_fixedn< 5, true, false>(q, out_x, out_y, px, py); return;
+				case  6: agp_compute_pose_fixedn< 6, true, false>(q, out_x, out_y, px, py); return;
+				case  7: agp_compute_pose_fixedn< 7, true, false>(q, out_x, out_y, px, py); return;
+				case  8: agp_compute_pose_fixedn< 8, true, false>(q, out_x, out_y, px, py); return;
+				case  9: agp_compute_pose_fixedn< 9, true, false>(q, out_x, out_y, px, py); return;
+				case 10: agp_compute_pose_fixedn<10, true, false>(q, out_x, out_y, px, py); return;
+				case 11: agp_compute_pose_fixedn<11, true, false>(q, out_x, out_y, px, py); return;
+				case 12: agp_compute_pose_fixedn<12, true, false>(q, out_x, out_y, px, py); return;
+				case 13: agp_compute_pose_fixedn<13, true, false>(q, out_x, out_y, px, py); return;
+				case 14: agp_compute_pose_fixedn<14, true, false>(q, out_x, out_y, px, py); return;
+				case 15: agp_compute_pose_fixedn<15, true, false>(q, out_x, out_y, px, py); return;
+				default: agp_compute_pose_fixedn<16, true, false>(q, out_x, out_y, px, py); return;
 				}
-				else
+			}
+		}
+		else
+		{
+			if (store)
+			{
+				switch (n)
 				{
-					switch (n)
-					{
-					case  1: agp_compute_pose_fixedn< 1, false, false>(q, out_x, out_y, px, py); return;
-					case  2: agp_compute_pose_fixedn< 2, false, false>(q, out_x, out_y, px, py); return;
-					case  3: agp_compute_pose_fixedn< 3, false, false>(q, out_x, out_y, px, py); return;
-					case  4: agp_compute_pose_fixedn< 4, false, false>(q, out_x, out_y, px, py); return;
-					case  5: agp_compute_pose_fixedn< 5, false, false>(q, out_x, out_y, px, py); return;
-					case  6: agp_compute_pose_fixedn< 6, false, false>(q, out_x, out_y, px, py); return;
-					case  7: agp_compute_pose_fixedn< 7, false, false>(q, out_x, out_y, px, py); return;
-					case  8: agp_compute_pose_fixedn< 8, false, false>(q, out_x, out_y, px, py); return;
-					case  9: agp_compute_pose_fixedn< 9, false, false>(q, out_x, out_y, px, py); return;
-					case 10: agp_compute_pose_fixedn<10, false, false>(q, out_x, out_y, px, py); return;
-					case 11: agp_compute_pose_fixedn<11, false, false>(q, out_x, out_y, px, py); return;
-					case 12: agp_compute_pose_fixedn<12, false, false>(q, out_x, out_y, px, py); return;
-					case 13: agp_compute_pose_fixedn<13, false, false>(q, out_x, out_y, px, py); return;
-					case 14: agp_compute_pose_fixedn<14, false, false>(q, out_x, out_y, px, py); return;
-					case 15: agp_compute_pose_fixedn<15, false, false>(q, out_x, out_y, px, py); return;
-					default: agp_compute_pose_fixedn<16, false, false>(q, out_x, out_y, px, py); return;
-					}
+				case  1: agp_compute_pose_fixedn< 1, false, true>(q, out_x, out_y, px, py); return;
+				case  2: agp_compute_pose_fixedn< 2, false, true>(q, out_x, out_y, px, py); return;
+				case  3: agp_compute_pose_fixedn< 3, false, true>(q, out_x, out_y, px, py); return;
+				case  4: agp_compute_pose_fixedn< 4, false, true>(q, out_x, out_y, px, py); return;
+				case  5: agp_compute_pose_fixedn< 5, false, true>(q, out_x, out_y, px, py); return;
+				case  6: agp_compute_pose_fixedn< 6, false, true>(q, out_x, out_y, px, py); return;
+				case  7: agp_compute_pose_fixedn< 7, false, true>(q, out_x, out_y, px, py); return;
+				case  8: agp_compute_pose_fixedn< 8, false, true>(q, out_x, out_y, px, py); return;
+				case  9: agp_compute_pose_fixedn< 9, false, true>(q, out_x, out_y, px, py); return;
+				case 10: agp_compute_pose_fixedn<10, false, true>(q, out_x, out_y, px, py); return;
+				case 11: agp_compute_pose_fixedn<11, false, true>(q, out_x, out_y, px, py); return;
+				case 12: agp_compute_pose_fixedn<12, false, true>(q, out_x, out_y, px, py); return;
+				case 13: agp_compute_pose_fixedn<13, false, true>(q, out_x, out_y, px, py); return;
+				case 14: agp_compute_pose_fixedn<14, false, true>(q, out_x, out_y, px, py); return;
+				case 15: agp_compute_pose_fixedn<15, false, true>(q, out_x, out_y, px, py); return;
+				default: agp_compute_pose_fixedn<16, false, true>(q, out_x, out_y, px, py); return;
+				}
+			}
+			else
+			{
+				switch (n)
+				{
+				case  1: agp_compute_pose_fixedn< 1, false, false>(q, out_x, out_y, px, py); return;
+				case  2: agp_compute_pose_fixedn< 2, false, false>(q, out_x, out_y, px, py); return;
+				case  3: agp_compute_pose_fixedn< 3, false, false>(q, out_x, out_y, px, py); return;
+				case  4: agp_compute_pose_fixedn< 4, false, false>(q, out_x, out_y, px, py); return;
+				case  5: agp_compute_pose_fixedn< 5, false, false>(q, out_x, out_y, px, py); return;
+				case  6: agp_compute_pose_fixedn< 6, false, false>(q, out_x, out_y, px, py); return;
+				case  7: agp_compute_pose_fixedn< 7, false, false>(q, out_x, out_y, px, py); return;
+				case  8: agp_compute_pose_fixedn< 8, false, false>(q, out_x, out_y, px, py); return;
+				case  9: agp_compute_pose_fixedn< 9, false, false>(q, out_x, out_y, px, py); return;
+				case 10: agp_compute_pose_fixedn<10, false, false>(q, out_x, out_y, px, py); return;
+				case 11: agp_compute_pose_fixedn<11, false, false>(q, out_x, out_y, px, py); return;
+				case 12: agp_compute_pose_fixedn<12, false, false>(q, out_x, out_y, px, py); return;
+				case 13: agp_compute_pose_fixedn<13, false, false>(q, out_x, out_y, px, py); return;
+				case 14: agp_compute_pose_fixedn<14, false, false>(q, out_x, out_y, px, py); return;
+				case 15: agp_compute_pose_fixedn<15, false, false>(q, out_x, out_y, px, py); return;
+				default: agp_compute_pose_fixedn<16, false, false>(q, out_x, out_y, px, py); return;
 				}
 			}
 		}
@@ -2335,7 +2257,7 @@ __declspec(align(32)) struct ManipCost final
 		__declspec(align(32)) float c_arr[AGP_MAX_FULL_DIM];
 
 		const float* __restrict th = q;
-		float phi_acc = 0.0f;
+		float phi_acc = PI_2;
 
 		if (store)
 		{
@@ -2773,80 +2695,6 @@ __declspec(align(32)) struct ManipCost final
 		return a;
 	}
 
-	static __declspec(noalias) __forceinline float polyline_circle_violation(
-		const float* __restrict px, const float* __restrict py, int segments,
-		float cx, float cy, float radius, float clearance) noexcept
-	{
-		const float rr = radius + clearance;
-		__declspec(align(32)) const __m256 vcx = _mm256_set1_ps(cx);
-		__declspec(align(32)) const __m256 vcy = _mm256_set1_ps(cy);
-
-		__m256 bestD2 = _mm256_set1_ps(FLT_MAX);
-
-		int i = 0;
-		const int limit = segments & ~7;
-		__pragma(loop(ivdep))
-			while (i < limit)
-			{
-				__m256 x1 = _mm256_load_ps(px + i);
-				__m256 y1 = _mm256_load_ps(py + i);
-				__m256 x2 = _mm256_loadu_ps(px + i + 1);
-				__m256 y2 = _mm256_loadu_ps(py + i + 1);
-
-				__m256 abx = _mm256_sub_ps(x2, x1);
-				__m256 aby = _mm256_sub_ps(y2, y1);
-				__m256 apx = _mm256_sub_ps(vcx, x1);
-				__m256 apy = _mm256_sub_ps(vcy, y1);
-
-				__m256 ab2 = _mm256_fmadd_ps(abx, abx, _mm256_mul_ps(aby, aby));
-				__m256 inv_ab2 = _mm256_rcp_ps(ab2);
-				inv_ab2 = _mm256_mul_ps(inv_ab2, _mm256_fnmadd_ps(ab2, inv_ab2, _mm256_set1_ps(2.0f)));
-				__m256 t = _mm256_mul_ps(_mm256_fmadd_ps(apx, abx, _mm256_mul_ps(apy, aby)), inv_ab2);
-				t = _mm256_max_ps(VEC_ZERO, _mm256_min_ps(VEC_COS_P0, t));
-
-				__m256 qx = _mm256_fmadd_ps(t, abx, x1);
-				__m256 qy = _mm256_fmadd_ps(t, aby, y1);
-
-				__m256 dx = _mm256_sub_ps(vcx, qx);
-				__m256 dy = _mm256_sub_ps(vcy, qy);
-				__m256 d2 = _mm256_fmadd_ps(dx, dx, _mm256_mul_ps(dy, dy));
-
-				bestD2 = _mm256_min_ps(bestD2, d2);
-
-				i += 8;
-			}
-
-		__declspec(align(32)) float tmp[8];
-		_mm256_store_ps(tmp, bestD2);
-		float best = tmp[0];
-		for (int j = 1; j < 8; ++j)
-		{
-			if (tmp[j] < best) best = tmp[j];
-		}
-
-		while (i < segments)
-		{
-			float d2 = point_segment_distance_sq(cx, cy, px[i], py[i], px[i + 1], py[i + 1]);
-			if (d2 < best) best = d2;
-			if (best <= rr * rr) break;
-			++i;
-		}
-
-		return rr - sqrtf(best);
-	}
-
-	static __declspec(noalias) __forceinline float outer_circle_clearance(float x, float y) noexcept
-	{
-		float dx = x - 5.0f;
-		return 5.0f - sqrtf(fmaf(dx, dx, fmaf(y, y, 0.0f)));
-	}
-
-	static __declspec(noalias) __forceinline float inner_circle_clearance(float x, float y) noexcept
-	{
-		float dx = x - 8.0f, dy = y + 3.0f;
-		return sqrtf(fmaf(dx, dx, fmaf(dy, dy, 0.0f))) - 2.7748873851023217f;
-	}
-
 	__forceinline void SetTransitionReference(const float* src) noexcept
 	{
 		cached_start_valid = false;
@@ -2858,14 +2706,6 @@ __declspec(align(32)) struct ManipCost final
 				referenceState[i] = src[i];
 				++i;
 			}
-		float phi_acc = 0.0f;
-		i = 0;
-		while (i < n)
-		{
-			phi_acc += referenceState[i];
-			referencePrefixAngles[i] = phi_acc;
-			++i;
-		}
 	}
 
 	__forceinline float TransitionAngleEnergy(const float* __restrict q) const noexcept
@@ -2897,58 +2737,36 @@ __declspec(align(32)) struct ManipCost final
 		return acc;
 	}
 
-	__forceinline float TransitionPrefixEnergy(const float* __restrict q) const noexcept
-	{
-		float acc = 0.0f;
-		float phi_acc = 0.0f;
-		int i = 0;
-		__pragma(loop(ivdep))
-			while (i < n)
-			{
-				phi_acc += q[i];
-				float d = wrap_pi(phi_acc - referencePrefixAngles[i]);
-				acc = fmaf(d, d, acc);
-				++i;
-			}
-		return acc;
-	}
-
 	__forceinline float TransitionEnergy(const float* __restrict q) const noexcept
 	{
 		return fmaf(
-			transitionPrefixEnergyWeight,
-			TransitionPrefixEnergy(q),
+			transitionEnergyWeight,
+			TransitionAngleEnergy(q),
 			fmaf(
 				transitionLengthEnergyWeight,
 				TransitionLengthEnergy(q),
-				fmaf(
-					transitionEnergyWeight,
-					TransitionAngleEnergy(q),
-					0.0f
-				)
+				0.0f
 			)
 		);
 	}
 
 	__declspec(noalias) __forceinline ManipCost(
-		int _n, bool _variableLen, float _targetX, float _targetY, float _minTheta,
-		float _fixedLength, float _stretchFactor, float* obstacleData, unsigned _obstacleCount, int _constraintMode, int mode) noexcept
+		int _n, bool _variableLen, float _targetX, float _targetY, float _maxTheta,
+		float _fixedLength, float _stretchFactor, float* obstacleData, unsigned _obstacleCount, int mode) noexcept
 		: n(_n)
 		, variableLen(_variableLen)
 		, fixedLength(_fixedLength)
 		, stretchFactor(_stretchFactor)
 		, targetX(_targetX)
 		, targetY(_targetY)
-		, minTheta(_minTheta)
-		, obstacleCount((_obstacleCount > MAX_OBSTACLES) ? MAX_OBSTACLES : _obstacleCount)
-		, constraintMode(_constraintMode)
+		, maxTheta(_maxTheta)
+		, obstacleCount(_obstacleCount)
 		, obstacleClearance(OBSTACLE_CLEARANCE)
 		, solveMode(mode)
 		, transitionCaptureWeight(mode & 2 ? 5000.0f : 10000.0f)
 		, transitionEnergyWeight(mode & 2 ? 10.0f : 1.0f)
 		, transitionLengthEnergyWeight(mode & 2 ? 3.5f : 0.35f)
-		, transitionPrefixEnergyWeight(mode & 2 ? 1.75f : 0.175f)
-		, transitionSweepPenaltyWeight(mode & 2 ? 8.0f : 5.0f)
+		, transitionSweepPenaltyWeight(mode & 2 ? 5.0f : 3.0f)
 		, transitionSweepPenaltyWeightLeaf(mode & 2 ? 2.0f : 1.15f)
 	{
 		if (obstacleData)
@@ -2986,20 +2804,11 @@ __declspec(align(32)) struct ManipCost final
 		return fmaf(transitionCaptureWeight, dist2, TransitionEnergy(q));
 	}
 
-	__declspec(noalias) __forceinline bool use_obstacle_constraints() const noexcept
-	{
-		return constraintMode & 1 && obstacleCount;
-	}
-	__declspec(noalias) __forceinline bool use_nonlinear_constraints() const noexcept
-	{
-		return constraintMode & 2;
-	}
 	__declspec(noalias) __forceinline unsigned total_constraints() const noexcept
 	{
 		unsigned total = static_cast<unsigned>(n);
 		if (variableLen) total += static_cast<unsigned>(n);
-		if (use_obstacle_constraints()) total += obstacleCount;
-		if (use_nonlinear_constraints()) total += 2u;
+		if (static_cast<bool>(obstacleCount)) total += obstacleCount;
 		return total;
 	}
 
@@ -3023,39 +2832,55 @@ __declspec(align(32)) struct ManipCost final
 	__declspec(noalias) __forceinline bool evaluate_joint_angle_limits_only(
 		const float* __restrict q, unsigned base_index, unsigned& out_index, float& out_value) const noexcept
 	{
-		__declspec(align(32)) const __m256 vlimit = _mm256_set1_ps(minTheta);
-		const __m256 vabsmsk = _mm256_castsi256_ps(_mm256_set1_epi32(0x7fffffff));
+		{
+			const float v0 = q[0];
+			if (v0 > maxTheta) {
+				out_index = base_index;
+				out_value = v0 - maxTheta;
+				return false;
+			}
+			if (v0 < -maxTheta) {
+				out_index = base_index;
+				out_value = -maxTheta - v0;
+				return false;
+			}
+		}
 
-		int i = 0;
+		__declspec(align(32)) const __m256 vnegMax = _mm256_set1_ps(-maxTheta);
+		int i = 1;
 		__pragma(loop(ivdep))
 			while (i + 8 <= n)
 			{
 				const __m256 vq = _mm256_load_ps(q + i);
-				const __m256 vabs = _mm256_and_ps(vq, vabsmsk);
-				const __m256 vviol = _mm256_sub_ps(vabs, vlimit);
-				const __m256 vcmp = _mm256_cmp_ps(vviol, VEC_ZERO, _CMP_GT_OQ);
-				const unsigned mask = static_cast<unsigned>(_mm256_movemask_ps(vcmp));
-
+				const __m256 vgt0 = _mm256_cmp_ps(vq, VEC_ZERO, _CMP_GT_OQ);
+				const __m256 vltNeg = _mm256_cmp_ps(vq, vnegMax, _CMP_LT_OQ);
+				const __m256 vmask = _mm256_or_ps(vgt0, vltNeg);
+				const unsigned mask = static_cast<unsigned>(_mm256_movemask_ps(vmask));
 				if (mask)
 				{
 					const unsigned first = static_cast<unsigned>(_tzcnt_u32(mask));
 					__declspec(align(32)) float tmp[8];
-					_mm256_store_ps(tmp, vviol);
-					out_index = base_index + static_cast<unsigned>(i) + first;
-					out_value = tmp[first];
+					_mm256_store_ps(tmp, vq);
+					const float val = tmp[first];
+					const float viol = (val > 0.0f) ? val : (-maxTheta - val);
+					out_index = base_index + static_cast<unsigned>(i + first);
+					out_value = viol;
 					return false;
 				}
 				i += 8;
 			}
-
 		__pragma(loop(ivdep))
 			while (i < n)
 			{
-				const float viol = fabsf(q[i]) - minTheta;
-				if (viol > 0.0f)
-				{
+				const float val = q[i];
+				if (val > 0.0f) {
 					out_index = base_index + static_cast<unsigned>(i);
-					out_value = viol;
+					out_value = val;
+					return false;
+				}
+				if (val < -maxTheta) {
+					out_index = base_index + static_cast<unsigned>(i);
+					out_value = -maxTheta - val;
 					return false;
 				}
 				++i;
@@ -3095,7 +2920,7 @@ __declspec(align(32)) struct ManipCost final
 	{
 		float geom_clearance = FLT_MAX;
 		unsigned idx = base_index;
-		if (use_obstacle_constraints())
+		if (static_cast<bool>(obstacleCount))
 		{
 			unsigned j = 0u;
 			__pragma(loop(ivdep))
@@ -3112,40 +2937,6 @@ __declspec(align(32)) struct ManipCost final
 					if (clearance < geom_clearance) geom_clearance = clearance;
 					++idx; ++j;
 				}
-		}
-		if (use_nonlinear_constraints())
-		{
-			const float outer_radius_eff = 5.0f - obstacleClearance;
-			float min_clearance_outer = FLT_MAX;
-			__pragma(loop(ivdep))
-				for (int i = 1; i <= n; ++i)
-				{
-					float dx = px[i] - 5.0f;
-					float dy = py[i] - 0.0f;
-					float d2 = fmaf(dx, dx, fmaf(dy, dy, 0.0f));
-					float r = sqrtf(d2);
-					if (r > outer_radius_eff)
-					{
-						float viol = r - outer_radius_eff;
-						out_index = idx; out_value = viol;
-						*out_geom_clearance = -viol;
-						return false;
-					}
-					float clearance_this = outer_radius_eff - r;
-					if (clearance_this < min_clearance_outer) min_clearance_outer = clearance_this;
-				}
-			if (min_clearance_outer < geom_clearance) geom_clearance = min_clearance_outer;
-			++idx;
-			float viol = polyline_circle_violation(px, py, n, 8.0f, -3.0f, sqrtf(7.7f), obstacleClearance);
-			if (viol > 0.0f)
-			{
-				out_index = idx; out_value = viol;
-				*out_geom_clearance = -viol;
-				return false;
-			}
-			float clearance = -viol;
-			if (clearance < geom_clearance) geom_clearance = clearance;
-			++idx;
 		}
 		*out_geom_clearance = geom_clearance;
 		return true;
@@ -3202,14 +2993,13 @@ __declspec(align(32)) struct ManipCost final
 
 	__forceinline bool transition_sweep_requires_validation() const noexcept
 	{
-		return solveMode && (use_obstacle_constraints() || use_nonlinear_constraints());
+		return solveMode && static_cast<bool>(obstacleCount);
 	}
 
-	__declspec(noalias) __forceinline bool validate_transition_segment_recursive(
+	__declspec(noalias) __forceinline bool validate_transition_segment(
 		const TransitionGeomSample& a,
 		const TransitionGeomSample& b,
 		const float motion_bound,
-		const int depth,
 		unsigned& out_index,
 		float& out_value) const noexcept
 	{
@@ -3217,16 +3007,88 @@ __declspec(align(32)) struct ManipCost final
 			return true;
 
 		const float leaf_required = fmaf(motion_bound, 0.25f, 0.0f);
-		TransitionGeomSample mid;
-		lerp_state_full_dim(a.q, b.q, 0.5f, mid.q);
-		if (!evaluate_state_without_transition_continuity(mid.q, mid.x, mid.y, out_index, out_value, &mid.clearance))
+		TransitionGeomSample q25, mid, q75;
+		bool q25_ok, mid_ok, q75_ok;
+		unsigned q25_idx, mid_idx, q75_idx;
+		float q25_val, mid_val, q75_val;
+
+		oneapi::tbb::parallel_invoke(
+			[this, &a, &b, &q25, &q25_ok, &q25_idx, &q25_val]()
+			{
+				lerp_state_full_dim(a.q, b.q, 0.25f, q25.q);
+				q25_ok = this->evaluate_state_without_transition_continuity(
+					q25.q, q25.x, q25.y, q25_idx, q25_val, &q25.clearance);
+			},
+			[this, &a, &b, &mid, &mid_ok, &mid_idx, &mid_val]()
+			{
+				lerp_state_full_dim(a.q, b.q, 0.5f, mid.q);
+				mid_ok = this->evaluate_state_without_transition_continuity(
+					mid.q, mid.x, mid.y, mid_idx, mid_val, &mid.clearance);
+			},
+			[this, &a, &b, &q75, &q75_ok, &q75_idx, &q75_val]()
+			{
+				lerp_state_full_dim(a.q, b.q, 0.75f, q75.q);
+				q75_ok = this->evaluate_state_without_transition_continuity(
+					q75.q, q75.x, q75.y, q75_idx, q75_val, &q75.clearance);
+			}
+		);
+
+		if (!(q25_ok && mid_ok && q75_ok))
 		{
 			out_index = total_constraints();
-			const float z = fmaf(1.0f / leaf_required, out_value, 0.0f);
-			const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
-			out_value = fmaf(transitionSweepPenaltyWeight, sweep_penalty_shape, compute_transition_objective_from_pose(b.q, b.x, b.y));
+			float sweep_penalty = 0.0f;
+			if (!q25_ok)
+			{
+				const float z = fmaf(0.5f / leaf_required, q25_val, 0.0f);
+				const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
+				sweep_penalty += sweep_penalty_shape;
+			}
+			if (!mid_ok)
+			{
+				const float z = fmaf(1.0f / leaf_required, mid_val, 0.0f);
+				const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
+				sweep_penalty += sweep_penalty_shape;
+			}
+			if (!q75_ok)
+			{
+				const float z = fmaf(0.5f / leaf_required, q75_val, 0.0f);
+				const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
+				sweep_penalty += sweep_penalty_shape;
+			}
+			out_value = fmaf(transitionSweepPenaltyWeight, sweep_penalty, compute_transition_objective_from_pose(b.q, b.x, b.y));
 			return false;
 		}
+
+		const float min_clear = std::min({
+						a.clearance,
+						q25.clearance,
+						mid.clearance,
+						q75.clearance,
+						b.clearance
+			});
+		if (min_clear > leaf_required)
+			return true;
+		out_index = total_constraints();
+		const float z = fmaf(-1.0f / leaf_required, min_clear, 1.0f);
+		const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
+		out_value = fmaf(transitionSweepPenaltyWeightLeaf, sweep_penalty_shape, compute_transition_objective_from_pose(b.q, b.x, b.y));
+		return false;
+	}
+
+	__declspec(noalias) __forceinline bool validate_transition_segment_recursive(
+		const TransitionGeomSample& a,
+		const TransitionGeomSample& b,
+		const float motion_bound,
+		const int depth) const noexcept
+	{
+		if (a.clearance > motion_bound && b.clearance > motion_bound)
+			return true;
+
+		TransitionGeomSample mid;
+		lerp_state_full_dim(a.q, b.q, 0.5f, mid.q);
+		unsigned dummy_idx; float dummy_val;
+		if (!evaluate_state_without_transition_continuity(mid.q, mid.x, mid.y, dummy_idx, dummy_val, &mid.clearance))
+			return false;
 
 		const float child_bound = fmaf(motion_bound, 0.5f, 0.0f);
 		if (a.clearance > child_bound && mid.clearance > child_bound && b.clearance > child_bound)
@@ -3234,86 +3096,66 @@ __declspec(align(32)) struct ManipCost final
 
 		if (!depth)
 		{
-			TransitionGeomSample q25{}, q75{};
-			lerp_state_full_dim(a.q, b.q, 0.25f, q25.q);
-			if (!evaluate_state_without_transition_continuity(q25.q, q25.x, q25.y, out_index, out_value, &q25.clearance))
-			{
-				out_index = total_constraints();
-				const float z = fmaf(1.0f / leaf_required, out_value, 0.0f);
-				const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
-				out_value = fmaf(transitionSweepPenaltyWeight, sweep_penalty_shape, compute_transition_objective_from_pose(b.q, b.x, b.y));
+			TransitionGeomSample q25, q75;
+			bool q25_ok, q75_ok;
+			unsigned q25_idx, q75_idx;
+			float q25_val, q75_val;
+
+			oneapi::tbb::parallel_invoke(
+				[this, &a, &b, &q25, &q25_ok, &q25_idx, &q25_val]()
+				{
+					lerp_state_full_dim(a.q, b.q, 0.25f, q25.q);
+					q25_ok = this->evaluate_state_without_transition_continuity(
+						q25.q, q25.x, q25.y, q25_idx, q25_val, &q25.clearance);
+				},
+				[this, &a, &b, &q75, &q75_ok, &q75_idx, &q75_val]()
+				{
+					lerp_state_full_dim(a.q, b.q, 0.75f, q75.q);
+					q75_ok = this->evaluate_state_without_transition_continuity(
+						q75.q, q75.x, q75.y, q75_idx, q75_val, &q75.clearance);
+				}
+			);
+			if (!(q25_ok && q75_ok))
 				return false;
-			}
-			lerp_state_full_dim(a.q, b.q, 0.75f, q75.q);
-			if (!evaluate_state_without_transition_continuity(q75.q, q75.x, q75.y, out_index, out_value, &q75.clearance))
-			{
-				out_index = total_constraints();
-				const float z = fmaf(1.0f / leaf_required, out_value, 0.0f);
-				const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
-				out_value = fmaf(transitionSweepPenaltyWeight, sweep_penalty_shape, compute_transition_objective_from_pose(b.q, b.x, b.y));
-				return false;
-			}
+
 			const float min_clear = std::min({
-							a.clearance,
-							q25.clearance,
-							mid.clearance,
-							q75.clearance,
-							b.clearance
+					a.clearance,
+					q25.clearance,
+					mid.clearance,
+					q75.clearance,
+					b.clearance
 				});
-			if (min_clear > leaf_required)
-				return true;
-			out_index = total_constraints();
-			const float z = fmaf(-1.0f / leaf_required, min_clear, 1.0f);
-			const float sweep_penalty_shape = z > 1.0f ? fmaf(z, 2.0f, -1.0f) : fmaf(z, z, 0.0f);
-			out_value = fmaf(transitionSweepPenaltyWeightLeaf, sweep_penalty_shape, compute_transition_objective_from_pose(b.q, b.x, b.y));
-			return false;
+			return min_clear > fmaf(motion_bound, 0.25f, 0.0f);
 		}
 
 		if (depth >= 5)
 		{
 			bool left_ok, right_ok;
-			unsigned left_idx, right_idx;
-			float left_val, right_val;
-
 			oneapi::tbb::parallel_invoke(
-				[this, &a, &mid, child_bound, depth, &left_ok, &left_idx, &left_val]()
+				[this, &a, &mid, child_bound, depth, &left_ok]()
 				{
 					left_ok = this->validate_transition_segment_recursive(
-						a, mid, child_bound, depth - 1, left_idx, left_val);
+						a, mid, child_bound, depth - 1);
 				},
-				[this, &mid, &b, child_bound, depth, &right_ok, &right_idx, &right_val]()
+				[this, &mid, &b, child_bound, depth, &right_ok]()
 				{
 					right_ok = this->validate_transition_segment_recursive(
-						mid, b, child_bound, depth - 1, right_idx, right_val);
+						mid, b, child_bound, depth - 1);
 				}
 			);
-
-			if (left_ok && right_ok)
-				return true;
-
-			if (!left_ok)
-			{
-				out_index = left_idx;
-				out_value = left_val;
-			}
-			else
-			{
-				out_index = right_idx;
-				out_value = right_val;
-			}
-			return false;
+			return left_ok && right_ok;
 		}
 		else
 		{
-			if (!validate_transition_segment_recursive(a, mid, child_bound, depth - 1, out_index, out_value))
+			if (!validate_transition_segment_recursive(a, mid, child_bound, depth - 1))
 				return false;
-			if (!validate_transition_segment_recursive(mid, b, child_bound, depth - 1, out_index, out_value))
+			if (!validate_transition_segment_recursive(mid, b, child_bound, depth - 1))
 				return false;
 			return true;
 		}
 	}
 
-	__declspec(noalias) __forceinline bool evaluate_transition_swept_motion(
+	__declspec(noalias) __forceinline bool evaluate_transition_swept_motion_indexed(
 		const float* __restrict q, float final_x, float final_y, float final_geom_clearance,
 		unsigned& out_index, float& out_value,
 		const float* __restrict existing_objective) const noexcept
@@ -3327,14 +3169,40 @@ __declspec(align(32)) struct ManipCost final
 			cached_start_valid = true;
 		}
 		const TransitionGeomSample& start = cached_start_sample;
-		TransitionGeomSample finish{};
+		TransitionGeomSample finish;
+		copy_state_full_dim(q, finish.q);
+		finish.x = final_x;
+		finish.y = final_y;
+		finish.clearance = final_geom_clearance;
+		const float motion_bound = transition_segment_motion_bound(start.q, finish.q);
+		if (!validate_transition_segment(start, finish, motion_bound, out_index, out_value))
+			return false;
+		out_index = total_constraints() + 1u;
+		out_value = existing_objective ? *existing_objective : compute_transition_objective_from_pose(q, final_x, final_y);
+		return true;
+	}
+
+	__declspec(noalias) __forceinline bool evaluate_transition_swept_motion(
+		const float* __restrict q, float final_x, float final_y, float final_geom_clearance,
+		unsigned& out_index, float& out_value) const noexcept
+	{
+		if (!cached_start_valid)
+		{
+			copy_state_full_dim(referenceState, cached_start_sample.q);
+			if (!evaluate_state_without_transition_continuity(
+				cached_start_sample.q, cached_start_sample.x, cached_start_sample.y, out_index, out_value, &cached_start_sample.clearance))
+				return false;
+			cached_start_valid = true;
+		}
+		const TransitionGeomSample& start = cached_start_sample;
+		TransitionGeomSample finish;
 		copy_state_full_dim(q, finish.q);
 		finish.x = final_x;
 		finish.y = final_y;
 		finish.clearance = final_geom_clearance;
 		const float motion_bound = transition_segment_motion_bound(start.q, finish.q);
 		int depth;
-		if (motion_bound <= SWEEP_MIN_BOUND) depth = 0;
+		if (motion_bound < SWEEP_MIN_BOUND) depth = 0;
 		else
 		{
 			const float x = fmaf(motion_bound, INV_SWEEP_MIN_BOUND, 0.0f);
@@ -3344,10 +3212,10 @@ __declspec(align(32)) struct ManipCost final
 			const uint32_t mantissa = bits & 0x7FFFFF;
 			depth = mantissa ? exp + 1 : exp;
 		}
-		if (!validate_transition_segment_recursive(start, finish, motion_bound, depth, out_index, out_value))
+		if (!validate_transition_segment_recursive(start, finish, motion_bound, depth))
 			return false;
 		out_index = total_constraints() + 1u;
-		out_value = existing_objective ? *existing_objective : compute_transition_objective_from_pose(q, final_x, final_y);
+		out_value = compute_transition_objective_from_pose(q, final_x, final_y);
 		return true;
 	}
 
@@ -3360,7 +3228,7 @@ __declspec(align(32)) struct ManipCost final
 			return false;
 		if (transition_sweep_requires_validation())
 		{
-			return evaluate_transition_swept_motion(q, out_x, out_y, clearance, out_index, out_value, nullptr);
+			return evaluate_transition_swept_motion_indexed(q, out_x, out_y, clearance, out_index, out_value, nullptr);
 		}
 		out_index = total_constraints();
 		out_value = solveMode
@@ -3385,7 +3253,7 @@ static __declspec(noalias) __forceinline unsigned agp_splitmix32(unsigned x) noe
 static __declspec(noalias) __forceinline float agp_radical_inverse_scrambled(unsigned long long index, unsigned base, unsigned scramble) noexcept
 {
 	unsigned long long base64 = static_cast<unsigned long long>(base);
-	float inv_base = 1.0f / static_cast<float>(base), inv_pow = inv_base, value = 0.0f;
+	float inv_base = 1.0f / static_cast<float>(base), inv_pow = inv_base, value;
 	unsigned state = scramble % base;
 	while (index)
 	{
@@ -3395,11 +3263,11 @@ static __declspec(noalias) __forceinline float agp_radical_inverse_scrambled(uns
 		index /= base64;
 		state = (state * 1664525u + 1013904223u) % base;
 	}
-	return value < 1.0f ? value : 0.99999994f;
+	return value;
 }
 
 static __declspec(noalias) __forceinline void agp_write_seed_point(
-	int row, int stride, int sobol_dims, int write_dim,
+	int row, int stride, int sobol_dims, int dim,
 	const unsigned* __restrict cur_x,
 	const unsigned* __restrict scramble_mask,
 	const float* __restrict low_cache,
@@ -3417,9 +3285,9 @@ static __declspec(noalias) __forceinline void agp_write_seed_point(
 			++dd;
 		}
 	__pragma(loop(ivdep))
-		while (dd < write_dim)
+		while (dd < dim)
 		{
-			unsigned base = halton_primes[(dd - AGP_SOBOL_BASE_DIMS) & 15];
+			unsigned base = halton_primes[(dd - AGP_MAX_FULL_DIM) & 15];
 			float u = agp_radical_inverse_scrambled(index, base, scramble_mask[dd]);
 			row_ptr[dd] = fmaf(u, span_cache[dd], low_cache[dd]);
 			++dd;
@@ -3432,20 +3300,15 @@ static __declspec(noalias) __forceinline void agp_write_seed_point(
 		}
 }
 
-static __declspec(noalias) __forceinline int generate_sobol_seeds_limited(
-	const MortonND& map, int dim, float* __restrict S, int stride, unsigned seed, int max_points) noexcept
+static __declspec(noalias) __forceinline int generate_sobol_seeds(
+	const MortonND& map, int dim_, float* __restrict S, int stride, unsigned seed, int max_points) noexcept
 {
-	if (max_points <= 0 || S == nullptr || stride <= 0 || dim <= 0) return 0;
-	int dim_eff = dim < AGP_MAX_FULL_DIM ? dim : AGP_MAX_FULL_DIM;
-	int write_dim = stride < dim_eff ? stride : dim_eff;
-	if (write_dim <= 0) return 0;
-	int temp_dim = dim_eff - 1;
-	if (temp_dim < 0) temp_dim = 0;
+	int dim = dim_;
+	int temp_dim = dim - 1;
 	int ns_orig = static_cast<int>(fmaf(static_cast<float>(temp_dim), fmaf(static_cast<float>(temp_dim), fmaf(static_cast<float>(temp_dim), fmaf(static_cast<float>(temp_dim), 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f));
 	int ns_pow2 = 1;
 	while (ns_pow2 < ns_orig) ns_pow2 <<= 1;
 	if (ns_pow2 > max_points) ns_pow2 = max_points;
-	if (ns_pow2 <= 0) return 0;
 
 	static const unsigned int sobol_dir[AGP_MAX_FULL_DIM][32] =
 	{
@@ -3492,40 +3355,42 @@ static __declspec(noalias) __forceinline int generate_sobol_seeds_limited(
 	__declspec(align(32)) unsigned scramble_mask[AGP_MAX_FULL_DIM];
 	__declspec(align(32)) float low_cache[AGP_MAX_FULL_DIM], span_cache[AGP_MAX_FULL_DIM];
 	int d = 0;
-	while (d < dim_eff)
-	{
-		seed = agp_splitmix32(seed ^ (0x9E3779B9u + static_cast<unsigned>(d) * 0x85EBCA6Bu));
-		scramble_mask[d] = seed;
-		++d;
-	}
+	__pragma(loop(ivdep))
+		while (d < dim)
+		{
+			seed = agp_splitmix32(seed ^ (0x9E3779B9u + static_cast<unsigned>(d) * 0x85EBCA6Bu));
+			scramble_mask[d] = seed;
+			++d;
+		}
 	d = 0;
-	while (d < write_dim)
-	{
-		int pd = map.perm[d];
-		float lo = map.low[pd];
-		low_cache[d] = lo;
-		span_cache[d] = fmaf(map.high[pd], 1.0f, -lo);
-		++d;
-	}
+	__pragma(loop(ivdep))
+		while (d < dim)
+		{
+			int pd = map.perm[d];
+			float lo = map.low[pd];
+			low_cache[d] = lo;
+			span_cache[d] = fmaf(map.high[pd], 1.0f, -lo);
+			++d;
+		}
 	unsigned long long start_idx = 1ull;
-	int sobol_dims = dim_eff < AGP_SOBOL_BASE_DIMS ? dim_eff : AGP_SOBOL_BASE_DIMS;
-	__declspec(align(32)) unsigned cur_x[AGP_SOBOL_BASE_DIMS]{};
+	__declspec(align(32)) unsigned cur_x[AGP_MAX_FULL_DIM];
 	d = 0;
-	while (d < sobol_dims)
+	while (d < dim)
 	{
 		unsigned x = 0u;
 		unsigned long long ii = start_idx;
 		int b = 0;
-		while (ii && b < 32)
-		{
-			if (ii & 1ull) x ^= sobol_dir[d][b];
-			ii >>= 1ull;
-			++b;
-		}
+		__pragma(loop(ivdep))
+			while (ii && b < 32)
+			{
+				if (ii & 1ull) x ^= sobol_dir[d][b];
+				ii >>= 1ull;
+				++b;
+			}
 		cur_x[d] = x ^ scramble_mask[d];
 		++d;
 	}
-	agp_write_seed_point(0, stride, sobol_dims, write_dim, cur_x, scramble_mask, low_cache, span_cache, S, start_idx, halton_primes);
+	agp_write_seed_point(0, stride, dim, dim, cur_x, scramble_mask, low_cache, span_cache, S, start_idx, halton_primes);
 	unsigned long long prev_gray = start_idx ^ (start_idx >> 1ull);
 	int j = 1;
 	while (j < ns_pow2)
@@ -3533,31 +3398,23 @@ static __declspec(noalias) __forceinline int generate_sobol_seeds_limited(
 		unsigned long long i = start_idx + static_cast<unsigned long long>(j);
 		unsigned long long gray = i ^ (i >> 1ull);
 		unsigned long long diff = gray ^ prev_gray;
-		if (sobol_dims > 0)
+		int bit = _tzcnt_u64(diff);
+		d = 0;
+		while (d < dim)
 		{
-			int bit = _tzcnt_u64(diff);
-			d = 0;
-			while (d < sobol_dims)
-			{
-				cur_x[d] ^= sobol_dir[d][bit];
-				++d;
-			}
+			cur_x[d] ^= sobol_dir[d][bit];
+			++d;
 		}
 		prev_gray = gray;
-		agp_write_seed_point(j, stride, sobol_dims, write_dim, cur_x, scramble_mask, low_cache, span_cache, S, i, halton_primes);
+		agp_write_seed_point(j, stride, dim, dim, cur_x, scramble_mask, low_cache, span_cache, S, i, halton_primes);
 		++j;
 	}
 	return ns_pow2;
 }
 
-static __declspec(noalias) __forceinline int generate_sobol_seeds(const MortonND& map, int dim, float* __restrict S, int stride, unsigned seed) noexcept
-{
-	return generate_sobol_seeds_limited(map, dim, S, stride, seed, AGP_MAX_GENERATED_SEEDS);
-}
-
 static __declspec(noalias) __forceinline void ccd_ik(float targetX, float targetY, const float* lengths, int n, float* angles, int max_iter) noexcept
 {
-	int nn = n < AGP_MAX_FULL_DIM ? n : AGP_MAX_FULL_DIM;
+	int nn = n;
 	__declspec(align(32)) float x[AGP_MAX_LINK_POINTS], y[AGP_MAX_LINK_POINTS], cum_angles[AGP_MAX_FULL_DIM], s_arr[AGP_MAX_FULL_DIM], c_arr[AGP_MAX_FULL_DIM];
 	int iter = 0;
 	while (iter < max_iter)
@@ -3611,7 +3468,7 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 	bool VL = cost.variableLen;
 	float tx = cost.targetX, ty = cost.targetY, phi = atan2f(ty, tx);
 
-	float dist_to_target = sqrtf(tx * tx + ty * ty), max_reach = 0.0f;
+	float dist_to_target = sqrtf(fmaf(tx, tx, ty * ty)), max_reach = 0.0f;
 	if (VL)
 	{
 		for (int i = 0; i < n; ++i)
@@ -3634,14 +3491,13 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 			if (total_seeds >= AGP_MAX_GENERATED_SEEDS)
 				return false;
 			float* dst = S + static_cast<size_t>(total_seeds) * static_cast<size_t>(stride);
-			__assume(dim > 0);
 			memcpy(dst, q_src, static_cast<size_t>(dim) * sizeof(float));
 			++total_seeds;
 			return true;
 		};
 
 	{
-		__declspec(align(32)) float q0[AGP_MAX_FULL_DIM]{};
+		__declspec(align(32)) float q0[AGP_MAX_FULL_DIM];
 		float rho = sqrtf(fmaf(tx, tx, ty * ty));
 		float len = fmaf(1.0f / static_cast<float>(fmaxf(static_cast<float>(n), 1.0f)), rho, 0.0f);
 		int i = 0;
@@ -3665,7 +3521,7 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 	}
 
 	{
-		__declspec(align(32)) float q1[AGP_MAX_FULL_DIM]{};
+		__declspec(align(32)) float q1[AGP_MAX_FULL_DIM];
 		int i = 0;
 		__pragma(loop(ivdep))
 			while (i < n)
@@ -3687,7 +3543,7 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 	}
 
 	{
-		__declspec(align(32)) float q2[AGP_MAX_FULL_DIM]{};
+		__declspec(align(32)) float q2[AGP_MAX_FULL_DIM];
 		float inv = (n > 1) ? 1.0f / static_cast<float>(n - 1) : 0.0f;
 		int i = 0;
 		__pragma(loop(ivdep))
@@ -3714,8 +3570,8 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 
 	if (use_ik && prefer_extended && total_seeds < AGP_MAX_GENERATED_SEEDS)
 	{
-		__declspec(align(32)) float q3[AGP_MAX_FULL_DIM]{};
-		float angles[AGP_MAX_FULL_DIM]{}, lengths[AGP_MAX_FULL_DIM]{};
+		__declspec(align(32)) float q3[AGP_MAX_FULL_DIM];
+		float angles[AGP_MAX_FULL_DIM], lengths[AGP_MAX_FULL_DIM];
 		if (VL)
 		{
 			const float avg_len = fmaf(map.low[n], 0.5f, fmaf(map.high[n], 0.5f, 0.0f));
@@ -3752,11 +3608,11 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 
 	if (use_ik && prefer_compact && total_seeds < AGP_MAX_GENERATED_SEEDS)
 	{
-		__declspec(align(32)) float q4[AGP_MAX_FULL_DIM]{};
-		float angles_fabrik[AGP_MAX_FULL_DIM]{}, lengths_fabrik[AGP_MAX_FULL_DIM]{};
+		__declspec(align(32)) float q4[AGP_MAX_FULL_DIM];
+		float angles_fabrik[AGP_MAX_FULL_DIM], lengths_fabrik[AGP_MAX_FULL_DIM];
 		if (VL)
 		{
-			float avg_len = 0.5f * (map.low[n] + map.high[n]);
+			float avg_len = fmaf(map.low[n], 0.5f, fmaf(map.high[n], 0.5f, 0.0f));
 			__pragma(loop(ivdep))
 				for (int i = 0; i < n; ++i)
 					lengths_fabrik[i] = avg_len;
@@ -3779,8 +3635,8 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 					angles_fabrik[j] = angle_to_target;
 					float s_val, c_val;
 					FABE13_SINCOS(&angle_to_target, &s_val, &c_val, 1);
-					prevX = prevX - len * c_val;
-					prevY = prevY - len * s_val;
+					prevY = fmaf(-len, s_val, prevY);
+					prevX = fmaf(-len, c_val, prevX);
 				}
 		}
 		int i = 0;
@@ -3804,9 +3660,9 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 	}
 
 	int remaining = AGP_MAX_GENERATED_SEEDS - total_seeds;
-	if (remaining > 0)
+	if (static_cast<bool>(remaining))
 	{
-		total_seeds += generate_sobol_seeds_limited(map, dim,
+		total_seeds += generate_sobol_seeds(map, dim,
 			S + static_cast<size_t>(total_seeds) * static_cast<size_t>(stride),
 			stride, seed, remaining);
 	}
@@ -3862,14 +3718,14 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	__declspec(align(32)) struct TrialPoint final
 	{
 		__declspec(align(32)) float q[AGP_MAX_FULL_DIM];
-		float t = 0.0f;
-		float f = FLT_MAX;
-		float x = 0.0f;
-		float y = 0.0f;
-		unsigned idx = 0u;
-		bool feasible = false;
-		unsigned char _pad0[3]{};
-		unsigned long long cell = 0ull;
+		float t;
+		float f;
+		float x;
+		float y;
+		unsigned idx;
+		bool feasible;
+		unsigned char _pad0[3];
+		unsigned long long cell;
 	};
 
 	const int n = cost.n;
@@ -3921,7 +3777,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 	int it = 0, stag_boost_remaining = 0;
 	float stag_r_multiplier = 0.0f;
-	const int n_stag_iters = static_cast<int>(3.0f + 2.045f * sqrt_dim);
+	const int n_stag_iters = static_cast<int>(fmaf(sqrt_dim, 2.045f, 3.0f));
 	const int noImproveThrDim = static_cast<int>(fmaf(7.5f, exp2f(-0.1f * sqrt_dim), 0.0f));
 	const int local_variants_base = 2 + static_cast<int>(sqrt_dim);
 	const int num_ik_base = 1 + static_cast<int>(sqrt_dim);
@@ -3936,31 +3792,31 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			I->i1 = c1;
 			I->i2 = c2;
 
-			if (!map.extra_levels && c1 == c2) return false;
-
 			I->diam = agp_block_diameter_firstchunk_exact_open_t(map, I->x1, I->x2);
 
-			if (!(I->diam > 0.0f)) return false;
+			if (!static_cast<bool>(I->diam)) return false;
 
-			const int firstChunkSpanBits = agp_firstchunk_span_bits_open(map, I->x1, I->x2);
+			const int firstChunkSpanBits = agp_firstchunk_span_bits_open(c1, c2);
 			int totalSpanBits = firstChunkSpanBits + map.extra_levels * map.dim;
-			if (totalSpanBits < 0) totalSpanBits = 0;
 			unsigned short span_level = static_cast<unsigned short>(totalSpanBits);
 			if (span_level > 11u) span_level = 11u;
 			I->span_level = span_level;
-			if (I->span_level > 11u) I->span_level = 11u;
 
 			I->set_metric(I->diam);
 			return true;
 		};
 
-	auto finalize_interval_geometry = [&](IntervalND* I) noexcept -> bool
+	auto make_interval_from_trials = [&](const TrialPoint& Lp, const TrialPoint& Rp) noexcept -> IntervalND*
 		{
-			return finalize_interval_geometry_from_cells(
+			if (Lp.t > Rp.t) return nullptr;
+			if (!agp_can_have_positive_diameter(map, Lp.t, Rp.t)) return nullptr;
+			IntervalND* I = IntervalND::Make(Lp.t, Rp.t, Lp.f, Rp.f, Lp.idx, Rp.idx);
+			if (!finalize_interval_geometry_from_cells(
 				I,
 				agp_t_to_firstchunk_idx_open(map, I->x1),
 				agp_t_to_firstchunk_idx_open(map, I->x2)
-			);
+			)) return nullptr;
+			return I;
 		};
 
 	auto update_pockets_and_Mmax = [&](IntervalND* I) noexcept
@@ -3978,7 +3834,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				const float Ls = pI->x2 - pI->x1;
 				if (Ls > new_dmax) new_dmax = Ls;
 			}
-			dmax = (new_dmax > 0.0f) ? new_dmax : initial_len;
+			dmax = new_dmax;
 		};
 
 	auto recompute_heap_constM = [&](float m_cur) noexcept
@@ -3994,21 +3850,23 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		if (cost.variableLen)
 		{
 			int j = n - 1;
-			while (j >= 0)
-			{
-				hj_order_interleaved_distal[pos++] = j;
-				hj_order_interleaved_distal[pos++] = n + j;
-				--j;
-			}
+			__pragma(loop(ivdep))
+				while (j >= 0)
+				{
+					hj_order_interleaved_distal[pos++] = j;
+					hj_order_interleaved_distal[pos++] = n + j;
+					--j;
+				}
 		}
 		else
 		{
 			int j = n - 1;
-			while (j >= 0)
-			{
-				hj_order_interleaved_distal[pos++] = j;
-				--j;
-			}
+			__pragma(loop(ivdep))
+				while (j >= 0)
+				{
+					hj_order_interleaved_distal[pos++] = j;
+					--j;
+				}
 		}
 	}
 
@@ -4017,18 +3875,20 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		int pos = 0;
 		if (cost.variableLen)
 		{
-			for (int j = 0; j < n; ++j)
-			{
-				hj_order_proximal[pos++] = j;
-				hj_order_proximal[pos++] = n + j;
-			}
+			__pragma(loop(ivdep))
+				for (int j = 0; j < n; ++j)
+				{
+					hj_order_proximal[pos++] = j;
+					hj_order_proximal[pos++] = n + j;
+				}
 		}
 		else
 		{
-			for (int j = 0; j < n; ++j)
-			{
-				hj_order_proximal[pos++] = j;
-			}
+			__pragma(loop(ivdep))
+				for (int j = 0; j < n; ++j)
+				{
+					hj_order_proximal[pos++] = j;
+				}
 		}
 	}
 
@@ -4065,7 +3925,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			unsigned& idx_eval, float& val_eval) noexcept -> bool
 		{
 			return local_search_fast_eval
-				? cost.evaluate_transition_swept_motion(
+				? cost.evaluate_transition_swept_motion_indexed(
 					q_eval, x_eval, y_eval, clearance_eval, idx_eval, val_eval, &val_eval
 				)
 				: true;
@@ -4076,13 +3936,13 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			if (d < n)
 			{
 				const float t01 = (n > 1) ? (static_cast<float>(d) / static_cast<float>(n - 1)) : 0.0f;
-				return (1.0f - t01) * hj_angle_scale_proximal + t01 * hj_angle_scale_distal;
+				return fmaf(1.0f - t01, hj_angle_scale_proximal, t01 * hj_angle_scale_distal);
 			}
 			if (cost.variableLen)
 			{
 				const int j = d - n;
 				const float t01 = (n > 1) ? (static_cast<float>(j) / static_cast<float>(n - 1)) : 0.0f;
-				return (1.0f - t01) * hj_length_scale_proximal + t01 * hj_length_scale_distal;
+				return fmaf(1.0f - t01, hj_length_scale_proximal, t01 * hj_length_scale_distal);
 			}
 			return 1.0f;
 		};
@@ -4093,8 +3953,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	__pragma(loop(ivdep))
 		for (int i = 0; i < n; ++i)
 		{
-			q_lo[i] = -cost.minTheta;
-			q_hi[i] = cost.minTheta;
+			q_lo[i] = -cost.maxTheta;
+			q_hi[i] = i ? 0.0f : cost.maxTheta;
 		}
 
 	if (cost.variableLen)
@@ -4113,7 +3973,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		{
 			const float span = map.high[d] - map.low[d];
 			const float scale = coord_scale(d);
-			hj_delta[d] = fmaxf(span * hj_init_delta_frac * scale, hj_init_delta_abs);
+			hj_delta[d] = fmaf(span, hj_init_delta_frac, scale);
 		}
 
 	__declspec(align(32)) float hj_curr_scale[AGP_MAX_FULL_DIM];
@@ -4132,13 +3992,13 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			if (d < n)
 			{
 				float t01 = (n > 1) ? (static_cast<float>(d) / static_cast<float>(n - 1)) : 0.0f;
-				scale = (1.0f - t01) * prox_angle_prox + t01 * prox_angle_dist;
+				scale = fmaf(1.0f - t01, prox_angle_prox, t01 * prox_angle_dist);
 			}
 			else if (cost.variableLen)
 			{
 				int j = d - n;
 				float t01 = (n > 1) ? (static_cast<float>(j) / static_cast<float>(n - 1)) : 0.0f;
-				scale = (1.0f - t01) * prox_len_prox + t01 * prox_len_dist;
+				scale = fmaf(1.0f - t01, prox_len_prox, t01 * prox_len_dist);
 			}
 			else
 			{
@@ -4179,7 +4039,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 	const float refine_eta_init = 2.0f / sqrtf(dim_f);
 
-	auto refine_trial = [&](float* q_inout, float& x_io, float& y_io, unsigned& idx_io, float& f_io, float t_lo, float t_hi, bool enforce_t_bounds) noexcept -> bool
+	auto refine_trial = [&](float* q_inout, float& x_io, float& y_io, unsigned& idx_io, float& f_io, const float t_lo, const float t_hi, const bool enforce_t_bounds) noexcept -> bool
 		{
 			if (!(f_io < fmaf(bestF, adaptive_coeff, 0.0f))) return false;
 			float transition_alpha_cap_local = 1.0f;
@@ -4189,18 +4049,18 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 			const float f_start = f_io;
 			const float c1 = 1e-4f;
-			const int max_outer_iters = static_cast<int>(50.0f * (1.0f + 0.65f * p));
-			const int max_backtrack = static_cast<int>(20.0f * (1.0f + 0.65f * p));
+			const float progress_multiplier = fmaf(p, 0.65f, 1.0f);
+			const int max_outer_iters = static_cast<int>(progress_multiplier * 50.0f);
+			const int max_backtrack = static_cast<int>(progress_multiplier * 20.0f);
 			const float lbfgs_trigger = 0.6f;
 			const int m_lbfgs = 9;
-			const int max_lbfgs_iters = static_cast<int>(25.0f * (1.0f + 0.65f * p));
+			const int max_lbfgs_iters = static_cast<int>(progress_multiplier * 25.0f);
 			const float eps_lbfgs_curv = 1e-6f;
-			const float eps_descent = 1e-12f;
 			float eta = refine_eta_init;
 
 			auto computeGrad = [&](const float* q_in, float x_in, float y_in, float* grad_out, float& grad_norm2_out) noexcept
 				{
-					float phi_acc_local = 0.0f;
+					float phi_acc_local = PI_2;
 					int ii = 0;
 					while (ii < n)
 					{
@@ -4224,28 +4084,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						--kk;
 					}
 
-					__declspec(align(32)) float prefix_tail_grad[AGP_MAX_FULL_DIM];
-					if (mode_transition)
-					{
-						__declspec(align(32)) float prefix_delta[AGP_MAX_FULL_DIM];
-						float phi_prefix = 0.0f;
-						int jj = 0;
-						while (jj < n)
-						{
-							phi_prefix = fmaf(q_in[jj], 1.0f, phi_prefix);
-							prefix_delta[jj] = ManipCost::wrap_pi(phi_prefix - cost.referencePrefixAngles[jj]);
-							++jj;
-						}
-						float tail = 0.0f;
-						jj = n - 1;
-						while (jj >= 0)
-						{
-							tail = fmaf(prefix_delta[jj], 1.0f, tail);
-							prefix_tail_grad[jj] = tail;
-							--jj;
-						}
-					}
-
 					const float dx = fmaf(x_in, 1.0f, -cost.targetX);
 					const float dy = fmaf(y_in, 1.0f, -cost.targetY);
 					const float dist2 = fmaf(dx, dx, dy * dy);
@@ -4265,7 +4103,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 							{
 								const float dtheta = cost.wrap_pi(q_in[i] - cost.referenceState[i]);
 								gpen = fmaf(2.0f * cost.transitionEnergyWeight, dtheta, 0.0f);
-								gpen = fmaf(2.0f * cost.transitionPrefixEnergyWeight, prefix_tail_grad[i], gpen);
 								const float inner = fmaf(dx, -sum_s[i], fmaf(dy, sum_c[i], 0.0f));
 								g_main = fmaf(2.0f * cost.transitionCaptureWeight, inner, 0.0f);
 							}
@@ -4355,7 +4192,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 								const float rejected_alpha = alpha;
 								alpha *= tau_full_fail;
 								transition_alpha_cap_local =
-									(std::min)(transition_alpha_cap_local, rejected_alpha * tau_full_fail);
+									(fminf)(transition_alpha_cap_local, rejected_alpha * tau_full_fail);
 
 								++full_rejects;
 								++backtrack;
@@ -4396,9 +4233,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			while (outer < max_outer_iters)
 			{
 				__declspec(align(32)) float grad[AGP_MAX_FULL_DIM];
-				float grad_norm2 = 0.0f;
+				float grad_norm2;
 				computeGrad(q_inout, x_io, y_io, grad, grad_norm2);
-				if (!(grad_norm2 == grad_norm2) || grad_norm2 < 1e-12f) break;
 
 				__declspec(align(32)) float dir_gd[AGP_MAX_FULL_DIM];
 				int i = 0;
@@ -4411,10 +4247,10 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 				float gtd_gd = -grad_norm2;
 				float eta_trial = eta;
-				float f_new = f_io;
-				float x_new = x_io;
-				float y_new = y_io;
-				unsigned idx_new = idx_io;
+				float f_new;
+				float x_new;
+				float y_new;
+				unsigned idx_new;
 
 				const bool found = armijoLineSearch(q_inout, f_io, dir_gd, gtd_gd, eta_trial, q_try, f_new, x_new, y_new, idx_new);
 				if (!found) break;
@@ -4427,7 +4263,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				eta = eta_trial;
 
 				const float rel_impr = (f_start - f_io) / f_start;
-				if (!lbfgs_already_tried && rel_impr >= lbfgs_trigger)
+				if (!lbfgs_already_tried && rel_impr > lbfgs_trigger)
 				{
 					lbfgs_already_tried = true;
 
@@ -4459,11 +4295,11 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 					while (it_lbfgs < max_lbfgs_iters)
 					{
-						if (!(gk_norm2 == gk_norm2) || gk_norm2 < 1e-12f) break;
+						bool use_lbfgs_direction = true;
 
 						__declspec(align(32)) float dir[AGP_MAX_FULL_DIM];
 
-						if (hist_size == 0)
+						if (!static_cast<bool>(hist_size))
 						{
 							int d = 0;
 							__pragma(loop(ivdep))
@@ -4488,19 +4324,21 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 							{
 								float dot_sq = 0.0f;
 								d = 0;
-								while (d < dim)
-								{
-									dot_sq = fmaf(s_hist[jj][d], q_vec[d], dot_sq);
-									++d;
-								}
+								__pragma(loop(ivdep))
+									while (d < dim)
+									{
+										dot_sq = fmaf(s_hist[jj][d], q_vec[d], dot_sq);
+										++d;
+									}
 								const float a_coeff = dot_sq * rho_hist[jj];
 								alpha_hist[jj] = a_coeff;
 								d = 0;
-								while (d < dim)
-								{
-									q_vec[d] = fmaf(-a_coeff, y_hist[jj][d], q_vec[d]);
-									++d;
-								}
+								__pragma(loop(ivdep))
+									while (d < dim)
+									{
+										q_vec[d] = fmaf(-a_coeff, y_hist[jj][d], q_vec[d]);
+										++d;
+									}
 							}
 
 							float gamma = 1.0f;
@@ -4508,11 +4346,12 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 								const int last = hist_size - 1;
 								float yy = 0.0f;
 								int d = 0;
-								while (d < dim)
-								{
-									yy = fmaf(y_hist[last][d], y_hist[last][d], yy);
-									++d;
-								}
+								__pragma(loop(ivdep))
+									while (d < dim)
+									{
+										yy = fmaf(y_hist[last][d], y_hist[last][d], yy);
+										++d;
+									}
 								const float ys = 1.0f / rho_hist[last];
 								if (yy > 0.0f) gamma = ys / yy;
 							}
@@ -4530,11 +4369,12 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 							{
 								float dot_yr = 0.0f;
 								d = 0;
-								while (d < dim)
-								{
-									dot_yr = fmaf(y_hist[jj][d], r_vec[d], dot_yr);
-									++d;
-								}
+								__pragma(loop(ivdep))
+									while (d < dim)
+									{
+										dot_yr = fmaf(y_hist[jj][d], r_vec[d], dot_yr);
+										++d;
+									}
 								const float b_coeff = dot_yr * rho_hist[jj];
 								const float coeff = alpha_hist[jj] - b_coeff;
 								d = 0;
@@ -4556,13 +4396,14 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 						float gtd = 0.0f;
 						int d = 0;
-						while (d < dim)
-						{
-							gtd = fmaf(gk[d], dir[d], gtd);
-							++d;
-						}
+						__pragma(loop(ivdep))
+							while (d < dim)
+							{
+								gtd = fmaf(gk[d], dir[d], gtd);
+								++d;
+							}
 
-						if (!(gtd == gtd) || gtd >= -eps_descent)
+						if (static_cast<bool>(gtd))
 						{
 							d = 0;
 							__pragma(loop(ivdep))
@@ -4572,11 +4413,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 									++d;
 								}
 							gtd = -gk_norm2;
-							if (gtd >= -eps_descent)
-							{
-								lbfgs_ok = false;
-								break;
-							}
+							use_lbfgs_direction = false;
 						}
 
 						__declspec(align(32)) float q_old[AGP_MAX_FULL_DIM];
@@ -4585,8 +4422,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						memcpy(g_old, gk, static_cast<size_t>(dim) * sizeof(float));
 
 						float alpha_try = alpha_k;
-						float f_try = f_io, x_try = x_io, y_try = y_io;
-						unsigned idx_try = idx_io;
+						float f_try, x_try, y_try;
+						unsigned idx_try;
 
 						const bool step_ok = armijoLineSearch(q_inout, f_io, dir, gtd, alpha_try, q_try, f_try, x_try, y_try, idx_try);
 						if (!step_ok)
@@ -4603,11 +4440,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						alpha_k = alpha_try;
 
 						computeGrad(q_inout, x_io, y_io, gk, gk_norm2);
-						if (!(gk_norm2 == gk_norm2))
-						{
-							lbfgs_ok = false;
-							break;
-						}
 
 						if (f_io < f_best_lbfgs)
 						{
@@ -4622,17 +4454,18 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						__declspec(align(32)) float s_new[AGP_MAX_FULL_DIM];
 						__declspec(align(32)) float y_new[AGP_MAX_FULL_DIM];
 						d = 0;
-						while (d < dim)
-						{
-							const float sd = q_inout[d] - q_old[d];
-							const float yd = gk[d] - g_old[d];
-							s_new[d] = sd;
-							y_new[d] = yd;
-							ys = fmaf(yd, sd, ys);
-							++d;
-						}
+						__pragma(loop(ivdep))
+							while (d < dim)
+							{
+								const float sd = q_inout[d] - q_old[d];
+								const float yd = gk[d] - g_old[d];
+								s_new[d] = sd;
+								y_new[d] = yd;
+								ys = fmaf(yd, sd, ys);
+								++d;
+							}
 
-						if (!(ys == ys) || ys <= eps_lbfgs_curv)
+						if (ys < eps_lbfgs_curv)
 						{
 							hist_size = 0;
 						}
@@ -4658,12 +4491,13 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 								{
 									rho_hist[jj] = rho_hist[jj + 1];
 									d = 0;
-									while (d < dim)
-									{
-										s_hist[jj][d] = s_hist[jj + 1][d];
-										y_hist[jj][d] = y_hist[jj + 1][d];
-										++d;
-									}
+									__pragma(loop(ivdep))
+										while (d < dim)
+										{
+											s_hist[jj][d] = s_hist[jj + 1][d];
+											y_hist[jj][d] = y_hist[jj + 1][d];
+											++d;
+										}
 								}
 								const int idx_hist = m_lbfgs - 1;
 								rho_hist[idx_hist] = 1.0f / ys;
@@ -4679,7 +4513,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 							}
 						}
 
-						if (gk_norm2 < 1e-12f) break;
 						++it_lbfgs;
 					}
 
@@ -4717,14 +4550,14 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				++outer;
 			}
 
-			return memcmp(q_inout, q_initial, static_cast<size_t>(dim) * sizeof(float)) != 0;
+			return static_cast<bool>(memcmp(q_inout, q_initial, static_cast<size_t>(dim) * sizeof(float)));
 		};
 
 	auto evaluate_trial_from_q = [&](const float* q_seed, float t_lo, float t_hi, bool enforce_t_bounds) noexcept -> TrialPoint
 		{
-			TrialPoint tr{};
+			TrialPoint tr;
 			memcpy(tr.q, q_seed, static_cast<size_t>(dim) * sizeof(float));
-			float clearance = 0.0f;
+			float clearance;
 			tr.feasible = cost.evaluate_state_without_transition_continuity(tr.q, tr.x, tr.y, tr.idx, tr.f, &clearance);
 
 			bool q_changed = false;
@@ -4753,9 +4586,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 	auto evaluate_trial_from_t = [&](float t_base, float t_lo, float t_hi, bool enforce_t_bounds) noexcept -> TrialPoint
 		{
-			TrialPoint tr{};
+			TrialPoint tr;
 			map.map01ToPoint(t_base, tr.q);
-			float clearance = 0.0f;
+			float clearance;
 			tr.feasible = cost.evaluate_state_without_transition_continuity(tr.q, tr.x, tr.y, tr.idx, tr.f, &clearance);
 			bool q_changed = false;
 			if (tr.feasible)
@@ -4777,93 +4610,53 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			return tr;
 		};
 
-	auto make_interval_from_trials = [&](const TrialPoint& Lp, const TrialPoint& Rp) noexcept -> IntervalND*
-		{
-			if (!(Lp.t < Rp.t)) return nullptr;
-
-			IntervalND* I = IntervalND::Make(Lp.t, Rp.t, Lp.f, Rp.f, Lp.idx, Rp.idx);
-			if (!finalize_interval_geometry(I))
-			{
-				return nullptr;
-			}
-			return I;
-		};
-
 	auto find_container_index_bounds = [&](float t, float& lo, float& hi) noexcept -> int
 		{
-			int best_pos_strict = -1;
-			int best_pos_loose = -1;
-			float best_len_strict = FLT_MAX;
-			float best_len_loose = FLT_MAX;
-
 			for (size_t i = 0u; i < H.size(); ++i)
 			{
 				const IntervalND* I = H[i];
 				const float x1 = I->x1;
 				const float x2 = I->x2;
-				const float len = x2 - x1;
-
-				if (t > x1 + AGP_T_EPS && t < x2 - AGP_T_EPS)
+				if (t > x1 && t < x2)
 				{
-					if (len < best_len_strict)
-					{
-						best_len_strict = len;
-						best_pos_strict = static_cast<int>(i);
-					}
-				}
-				else if (t >= x1 - AGP_T_EPS && t <= x2 + AGP_T_EPS)
-				{
-					if (len < best_len_loose)
-					{
-						best_len_loose = len;
-						best_pos_loose = static_cast<int>(i);
-					}
+					lo = x1;
+					hi = x2;
+					return static_cast<int>(i);
 				}
 			}
-
-			const int best_pos = (best_pos_strict >= 0) ? best_pos_strict : best_pos_loose;
-
-			if (best_pos >= 0)
-			{
-				const IntervalND* I = H[static_cast<size_t>(best_pos)];
-				lo = I->x1;
-				hi = I->x2;
-			}
-			else
-			{
-				lo = 0.0f;
-				hi = 1.0f;
-			}
-
-			return best_pos;
+			lo = 0.0f;
+			hi = 1.0f;
+			return -1;
 		};
 
 	auto inject_trial_into_queue_pos =
 		[&](const TrialPoint& tr, int pos, float r_eff_cur, float adaptive_coeff_cur) noexcept
 		{
 			IntervalND* src = H[static_cast<size_t>(pos)];
-			if (!(tr.t > src->x1 + AGP_T_EPS && tr.t < src->x2 - AGP_T_EPS))
+			if (!(tr.t > src->x1 && tr.t < src->x2))
 				return;
 
 			const unsigned long long mid_i = agp_t_to_firstchunk_idx_open(map, tr.t);
 			const float src_len = src->x2 - src->x1;
 
-			IntervalND* L = IntervalND::Make(src->x1, tr.t, src->y1, tr.f, src->idx1, tr.idx);
-			if (!finalize_interval_geometry_from_cells(L, src->i1, mid_i))
-			{
-				L = nullptr;
-			}
+			IntervalND* L = nullptr;
+			IntervalND* Rv = nullptr;
 
-			IntervalND* Rv = IntervalND::Make(tr.t, src->x2, tr.f, src->y2, tr.idx, src->idx2);
-			if (!finalize_interval_geometry_from_cells(Rv, mid_i, src->i2))
+			if (agp_can_have_positive_diameter(map, src->x1, tr.t))
 			{
-				Rv = nullptr;
+				L = IntervalND::Make(src->x1, tr.t, src->y1, tr.f, src->idx1, tr.idx);
+				if (!finalize_interval_geometry_from_cells(L, src->i1, mid_i)) L = nullptr;
+			}
+			if (agp_can_have_positive_diameter(map, tr.t, src->x2))
+			{
+				Rv = IntervalND::Make(tr.t, src->x2, tr.f, src->y2, tr.idx, src->idx2);
+				if (!finalize_interval_geometry_from_cells(Rv, mid_i, src->i2)) Rv = nullptr;
 			}
 
 			if (L == nullptr && Rv == nullptr)
 			{
 				heap_erase_at(H, static_cast<size_t>(pos));
-				if (src_len + AGP_T_EPS >= dmax)
+				if (src_len > dmax)
 					recompute_dmax();
 				return;
 			}
@@ -4883,7 +4676,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				if (Mmax > fmaf(adaptive_coeff_cur, prevMmax, 0.0f))
 					recompute_heap_constM(m_cur);
 
-				if (src_len + AGP_T_EPS >= dmax)
+				if (src_len > dmax)
 					recompute_dmax();
 
 				return;
@@ -4899,13 +4692,12 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 			H[static_cast<size_t>(pos)] = L;
 			heap_fix_at(H, static_cast<size_t>(pos));
-
 			heap_push(H, Rv);
 
 			if (Mmax > fmaf(adaptive_coeff_cur, prevMmax, 0.0f))
 				recompute_heap_constM(m_cur);
 
-			if (src_len + AGP_T_EPS >= dmax)
+			if (src_len > dmax)
 				recompute_dmax();
 		};
 
@@ -4964,9 +4756,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						}
 
 						const float old_scale = hj_curr_scale[d];
-						if (fabsf(new_scale - old_scale) > 1.0e-12f)
+						if (fabsf(new_scale - old_scale) > 1.0e-7f)
 						{
-							hj_delta[d] = fmaxf(hj_min_delta, hj_delta[d] * (new_scale / old_scale));
+							hj_delta[d] = fmaxf(hj_min_delta, fmaf(hj_delta[d] / old_scale, new_scale, 0.0f));
 							hj_curr_scale[d] = new_scale;
 						}
 
@@ -4984,7 +4776,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 			select_hj_seed(seedQ, seedF, seedIdx, seedX, seedY);
 
-			TrialPoint base{};
+			TrialPoint base;
 			memcpy(base.q, seedQ->data(), static_cast<size_t>(dim) * sizeof(float));
 			base.t = agp_clamp_unit_open_scalar(map.pointToT(base.q));
 			base.f = seedF;
@@ -5030,48 +4822,32 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						return false;
 					};
 
-				const int first_sign = hj_plus_first ? +1 : -1;
+				const int first_sign = 1;
 				const int second_sign = -first_sign;
 
-				bool improved_this_axis = false;
-				TrialPoint best_axis_tp{};
+				TrialPoint best_axis_tp;
 				bool have_axis_tp = false;
-				TrialPoint tp_try{};
+				TrialPoint tp_try;
 
 				if (try_direction(first_sign, tp_try))
 				{
 					best_axis_tp = tp_try;
 					have_axis_tp = true;
-					if (hj_opportunistic_axis)
+				}
+
+				if (try_direction(second_sign, tp_try))
+				{
+					if (!have_axis_tp || better_indexed(tp_try.idx, tp_try.f, best_axis_tp.idx, best_axis_tp.f))
 					{
-						current = best_axis_tp;
-						improved_any = true;
-						improved_this_axis = true;
+						best_axis_tp = tp_try;
+						have_axis_tp = true;
 					}
 				}
 
-				if (!hj_opportunistic_axis || !have_axis_tp)
+				if (have_axis_tp)
 				{
-					if (try_direction(second_sign, tp_try))
-					{
-						if (!have_axis_tp || better_indexed(tp_try.idx, tp_try.f, best_axis_tp.idx, best_axis_tp.f))
-						{
-							best_axis_tp = tp_try;
-							have_axis_tp = true;
-						}
-					}
-
-					if (have_axis_tp)
-					{
-						current = best_axis_tp;
-						improved_any = true;
-						improved_this_axis = true;
-					}
-				}
-
-				if (improved_this_axis && hj_expand_delta_on_success)
-				{
-					hj_delta[d] = fmaxf(hj_min_delta, hj_delta[d] * 1.0f);
+					current = best_axis_tp;
+					improved_any = true;
 				}
 
 				++ord;
@@ -5079,22 +4855,19 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 			if (improved_any)
 			{
-				if (hj_use_pattern)
-				{
-					__declspec(align(32)) float q_pattern[AGP_MAX_FULL_DIM];
-					int d = 0;
-					__pragma(loop(ivdep))
-						while (d < dim)
-						{
-							q_pattern[d] = fmaf(hj_pattern_gain, current.q[d] - base_before.q[d], current.q[d]);
-							++d;
-						}
-					agp_clamp_avx2(q_pattern, q_lo, q_hi, dim);
-					const TrialPoint pat_tp = evaluate_hj_candidate(q_pattern);
-					if (better_indexed(pat_tp.idx, pat_tp.f, current.idx, current.f))
+				__declspec(align(32)) float q_pattern[AGP_MAX_FULL_DIM];
+				int d = 0;
+				__pragma(loop(ivdep))
+					while (d < dim)
 					{
-						current = pat_tp;
+						q_pattern[d] = fmaf(hj_pattern_gain, current.q[d] - base_before.q[d], current.q[d]);
+						++d;
 					}
+				agp_clamp_avx2(q_pattern, q_lo, q_hi, dim);
+				const TrialPoint pat_tp = evaluate_hj_candidate(q_pattern);
+				if (better_indexed(pat_tp.idx, pat_tp.f, current.idx, current.f))
+				{
+					current = pat_tp;
 				}
 			}
 			else
@@ -5103,7 +4876,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				__pragma(loop(ivdep))
 					while (d < dim)
 					{
-						hj_delta[d] = fmaxf(hj_delta[d] * hj_shrink_factor, hj_min_delta);
+						hj_delta[d] = fmaxf(fmaf(hj_delta[d], hj_shrink_factor, 0.0f), hj_min_delta);
 						++d;
 					}
 			}
@@ -5136,9 +4909,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			(i < 3)
 			? fmaf(0.0004f, static_cast<float>(dim), 0.0f)
 			: fmaf(stagnation_seed_interval,
-				exp2f((1.0f / static_cast<float>(fmaxf(static_cast<float>(seedCnt - 4), 1.0f))) *
-					log2f(fmaf(0.00025f, 1.0f / 0.00031f, 0.0f)) *
-					static_cast<float>(i - 3)),
+				exp2f(fmaf(fmaf((1.0f / static_cast<float>(fmaxf(static_cast<float>(seedCnt - 4), 1.0f))),
+					log2f(fmaf(0.00025f, 1.0f / 0.00031f, 0.0f)), 0.0f),
+					static_cast<float>(i - 3), 0.0f)),
 				0.0f);
 
 		const float t1b = agp_clamp_unit_open_scalar(t_seed - interval_size);
@@ -5149,7 +4922,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		TrialPoint right_tp = evaluate_trial_from_t(t2b, mid, t2b, true);
 
 		IntervalND* I = make_interval_from_trials(left_tp, right_tp);
-		if (I == nullptr) continue;
+		if (!static_cast<bool>(I)) continue;
 
 		update_pockets_and_Mmax(I);
 		I->ChangeCharacteristic(fmaf(r, Mmax, 0.0f));
@@ -5162,11 +4935,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		{
 			const float start_mult = fmaf(0.214f, static_cast<float>(dim), 0.0f);
 			const float end_mult = fmaf(0.174f, static_cast<float>(dim), 0.0f);
-			const float mult = fmaf(start_mult,
-				exp2f((1.0f / static_cast<float>(fmaxf(static_cast<float>(seedCnt - 4), 1.0f))) *
-					log2f(fmaf(end_mult, 1.0f / start_mult, 0.0f)) *
-					static_cast<float>(i - 3)),
-				0.0f);
+			const float mult = fmaf(exp2f(fmaf(fmaf((1.0f / static_cast<float>(fmaxf(static_cast<float>(seedCnt - 4), 1.0f))),
+				log2f(fmaf(end_mult, 1.0f / start_mult, 0.0f)), 0.0f),
+				static_cast<float>(i - 3), 0.0f)), start_mult, 0.0f);
 			I->R = fmaf(I->R, mult, 0.0f);
 		}
 
@@ -5176,12 +4947,11 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	std::vector<float, boost::alignment::aligned_allocator<float, 32u>> grid_base;
 	grid_base.reserve(static_cast<size_t>(K) + 2u);
 	grid_base.emplace_back(a);
+	const float fraction = fmaf(1.0f / static_cast<float>(K + 1), b - a, 0.0f);
+	const float inv_world_K1 = static_cast<float>(rank) / static_cast<float>(world * (K + 1));
 	for (int k = 1; k <= K; ++k)
 	{
-		const float t = agp_clamp_unit_open_scalar(
-			fmaf(fmaf(b - a, static_cast<float>(k) / static_cast<float>(K + 1), a),
-				1.0f,
-				static_cast<float>(rank) / static_cast<float>(world * (K + 1))));
+		const float t = agp_clamp_unit_open_scalar(fmaf(fraction, static_cast<float>(k), a + inv_world_K1));
 		grid_base.emplace_back(t);
 	}
 	grid_base.emplace_back(b);
@@ -5214,7 +4984,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	for (size_t i = 1u; i < grid_trials.size(); ++i)
 	{
 		IntervalND* I = make_interval_from_trials(grid_trials[i - 1u], grid_trials[i]);
-		if (I == nullptr) continue;
 		update_pockets_and_Mmax(I);
 		I->ChangeCharacteristic(fmaf(r, Mmax, 0.0f));
 		heap_push(H, I);
@@ -5240,7 +5009,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	while (true)
 	{
 		float interval_len = (dim > 1) ? fmaf(H.front()->x2, 1.0f, -H.front()->x1) : H.front()->diam;
-		if (/*interval_len < stop_len || */++it == maxIter)
+		if (interval_len < stop_len || ++it == maxIter)
 		{
 			if (multi_start)
 			{
@@ -5302,13 +5071,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					bestIndexedY = bestY;
 				}
 			}
-			else if (haveFeasibleBest)
-			{
-				bestIndexFound = fullConstraintIndex;
-				bestIndexValue = bestF;
-				bestIndexedX = bestX;
-				bestIndexedY = bestY;
-			}
 			else
 			{
 				bestF = bestIndexValue;
@@ -5322,27 +5084,28 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		}
 
 		p = fmaf(-1.0f / initial_len, dmax, 1.0f);
-		stag_r_multiplier = 1.4f - 1.1f * fmaf(0.65f * p - 0.45f,
-			fmaf(0.65f * p - 0.45f,
-				fmaf(0.65f * p - 0.45f,
-					fmaf(0.65f * p - 0.45f,
-						fmaf(0.65f * p - 0.45f, 0.164056f, -0.098462f),
+		const float tmp_multiplier = fmaf(p, 0.65f, -0.45f);
+		stag_r_multiplier = fmaf(-fmaf(tmp_multiplier,
+			fmaf(tmp_multiplier,
+				fmaf(tmp_multiplier,
+					fmaf(tmp_multiplier,
+						fmaf(tmp_multiplier, 0.164056f, -0.098462f),
 						0.240884f),
 					-0.351834f),
 				0.999996f),
-			0.65f * p - 0.45f);
-		float p_arg = fmaf(p, 2.3f, -2.9775f);
+			tmp_multiplier), 1.1f, 1.4f);
+		const float p_arg = fmaf(p, 2.3f, -2.9775f);
 		float current_r = r;
 		if (stag_boost_remaining > 0)
 		{
 			current_r = r * stag_r_multiplier;
 			--stag_boost_remaining;
 		}
-		float exp_arg = fmaf(B_dim, p, 0.0f);
-		float exp_arg__ = fmaf(B_dim__, p, 0.0f);
+		const float exp_arg = fmaf(B_dim, p, 0.0f);
+		const float exp_arg__ = fmaf(B_dim__, p, 0.0f);
 		adaptive_coeff = fmaf(-fmaf(exp_arg, fmaf(exp_arg, fmaf(exp_arg, fmaf(exp_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f), adaptive_coeff_addition, A_dim);
-		float rr = sqrtf(fmaf(-p, 1.0f, 1.0f)), xx = p * p, tt = fmaf(500.0f, p, -486.95472f);
-		float adaptive_coeff_ = (p < 0.95f) ? fmaf(fmaf(first_sqrt, xx, 0.0f), 0.0130349902f, fmaf(-0.04f, p, fmaf(fmaf(first_sqrt, rr, 0.0f), 0.15f, 1.1f)))
+		const float rr = sqrtf(fmaf(-p, 1.0f, 1.0f)), xx = p * p, tt = fmaf(500.0f, p, -486.95472f);
+		const float adaptive_coeff_ = (p < 0.95f) ? fmaf(fmaf(first_sqrt, xx, 0.0f), 0.0130349902f, fmaf(-0.04f, p, fmaf(fmaf(first_sqrt, rr, 0.0f), 0.15f, 1.1f)))
 			: (p < 0.97390944f) ? fmaf(second_sqrt, rr, 0.9396f)
 			: (p < 0.97590944f) ? fmaf(fmaf(fmaf(fmaf(third_sqrt, tt, 0.0f), tt, 0.0f), fmaf(-2.0f, tt, 3.0f), 0.0f), fmaf(0.25f, rr, -0.0396f), fmaf(fmaf(third_sqrt, rr, 0.0f), 0.75f, 0.9396f))
 			: fmaf(fourth_sqrt, rr, 0.925f);
@@ -5374,29 +5137,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				sum_c_best[k_best] = ac_best;
 				--k_best;
 			}
-			__declspec(align(32)) float prefix_tail_best[AGP_MAX_FULL_DIM] = { 0.0f };
-			if (mode_transition)
-			{
-				__declspec(align(32)) float prefix_delta_best[AGP_MAX_FULL_DIM] = { 0.0f };
-				float phi_pref = 0.0f;
-				int jj = 0;
-				while (jj < n)
-				{
-					phi_pref += bestQ[jj];
-					prefix_delta_best[jj] = ManipCost::wrap_pi(phi_pref - cost.referencePrefixAngles[jj]);
-					++jj;
-				}
-				float tail = 0.0f;
-				jj = n - 1;
-				while (jj >= 0)
-				{
-					tail += prefix_delta_best[jj];
-					prefix_tail_best[jj] = tail;
-					--jj;
-				}
-			}
 			const float dx_best = fmaf(bestX, 1.0f, -cost.targetX), dy_best = fmaf(bestY, 1.0f, -cost.targetY);
-			const float dist_best = sqrtf(fmaf(dx_best, dx_best, dy_best * dy_best));
+			const float dist_best = sqrtf(fmaf(dx_best, dx_best, fmaf(dy_best, dy_best, 0.0f)));
 			const float inv_dist_best = 1.0f / dist_best;
 			int i_best = 0;
 			while (i_best < n)
@@ -5405,15 +5147,11 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				if (mode_transition)
 				{
 					const float dtheta_best = cost.wrap_pi(bestQ[i_best] - cost.referenceState[i_best]);
-					gpen_best = fmaf(
-						fmaf(2.0f, cost.transitionPrefixEnergyWeight, 0.0f),
-						prefix_tail_best[i_best],
-						fmaf(2.0f, cost.transitionEnergyWeight, 0.0f) * dtheta_best
-					);
+					gpen_best = fmaf(fmaf(2.0f, cost.transitionEnergyWeight, 0.0f), dtheta_best, 0.0f);
 					g_main_best = fmaf(
-						fmaf(2.0f, cost.transitionCaptureWeight * dx_best, 0.0f),
+						fmaf(2.0f, fmaf(cost.transitionCaptureWeight, dx_best, 0.0f), 0.0f),
 						-sum_s_best[i_best],
-						fmaf(2.0f * cost.transitionCaptureWeight * dy_best, sum_c_best[i_best], 0.0f)
+						fmaf(fmaf(fmaf(2.0f, cost.transitionCaptureWeight, 0.0f), dy_best, 0.0f), sum_c_best[i_best], 0.0f)
 					);
 				}
 				else
@@ -5443,14 +5181,14 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 								fmaf(
 									two_transLength,
 									bestQ[n + j_best],
-									fmaf(-1.0f, two_transLength * cost.referenceState[n + j_best], 0.0f)
+									fmaf(-1.0f, fmaf(two_transLength, cost.referenceState[n + j_best], 0.0f), 0.0f)
 								)
 							)
 						);
 					}
 					else
 					{
-						gi_best = fmaf(dx_best, c_best[j_best], dy_best * s_best[j_best]) * inv_dist_best;
+						gi_best = fmaf(fmaf(dx_best, c_best[j_best], fmaf(dy_best, s_best[j_best], 0.0f)), inv_dist_best, 0.0f);
 					}
 					grad_norm2_best = fmaf(gi_best, gi_best, grad_norm2_best);
 					++j_best;
@@ -5459,8 +5197,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		}
 
 		bool stagnation = (no_improve > noImproveThrDim) && (grad_norm2_best < 0.5e-1f);
-		float r_eff = (dim > 2) ? fmaf(-fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) + 1.05f, fmaf(sqrt_dim_minus_1, current_r, 0.0f), 0.0f)
-			: fmaf(-fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f) + 1.05f, current_r, 0.0f);
+		float r_eff = (dim > 2) ? fmaf(-fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), -0.05f), fmaf(sqrt_dim_minus_1, current_r, 0.0f), 0.0f)
+			: fmaf(-fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, fmaf(p_arg, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), -0.05f), current_r, 0.0f);
 
 		if (stagnation)
 		{
@@ -5468,7 +5206,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			float t_seeds[AGP_MAX_FULL_DIM];
 			int seed_count = 0;
 			int num_ik = num_ik_base;
-			float dist_to_target = sqrtf(cost.targetX * cost.targetX + cost.targetY * cost.targetY);
+			float dist_to_target = sqrtf(fmaf(cost.targetX, cost.targetX, fmaf(cost.targetY, cost.targetY, 0.0f)));
 			float max_reach = 0.0f;
 			if (cost.variableLen)
 			{
@@ -5476,14 +5214,15 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			}
 			else
 			{
-				max_reach = static_cast<float>(n) * cost.fixedLength;
+				max_reach = fmaf(cost.fixedLength, static_cast<float>(n), 0.0f);
 			}
 			float ratio = dist_to_target / max_reach;
 			bool prefer_extended = (ratio > 0.7f), prefer_compact = (ratio < 0.4f), use_ik = !(ratio > 0.4f && ratio < 0.7f);
 			if (!use_ik)
 			{
-				std::vector<float, boost::alignment::aligned_allocator<float, 32u>> temp_S(static_cast<size_t>(64) * static_cast<size_t>(64), 0.0f);
-				int sobol_gen = generate_sobol_seeds_limited(map, dim, temp_S.data(), 64, seed + static_cast<unsigned>(it), 64);
+				std::vector<float, boost::alignment::aligned_allocator<float, 32u>> temp_S(
+					static_cast<size_t>(AGP_MAX_GENERATED_SEEDS) * static_cast<size_t>(AGP_MAX_FULL_DIM), 0.0f);
+				int sobol_gen = generate_sobol_seeds(map, dim, temp_S.data(), 64, seed + static_cast<unsigned>(it), 64);
 				int num_sobol = num_ik;
 				for (int kk = 0; kk < num_sobol && kk < sobol_gen && seed_count < AGP_MAX_FULL_DIM; ++kk)
 				{
@@ -5496,7 +5235,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				__declspec(align(32)) float angles_ccd[AGP_MAX_FULL_DIM] = { 0.0f }, lengths_ccd[AGP_MAX_FULL_DIM];
 				if (cost.variableLen)
 				{
-					float len_low = map.low[n], len_high = map.high[n], avg_len = 0.5f * (len_low + len_high);
+					float len_low = map.low[n], len_high = map.high[n], avg_len = fmaf(len_low, 0.5f, fmaf(len_high, 0.5f, 0.0f));
 					for (int ii = 0; ii < n; ++ii) lengths_ccd[ii] = avg_len;
 				}
 				else
@@ -5524,8 +5263,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						angles_fabrik[j] = angle_to_target;
 						float s_val, c_val;
 						FABE13_SINCOS(&angle_to_target, &s_val, &c_val, 1);
-						prevX = prevX - len * c_val;
-						prevY = prevY - len * s_val;
+						prevY = fmaf(-len, s_val, prevY);
+						prevX = fmaf(-len, c_val, prevX);
 					}
 				}
 				if (prefer_extended)
@@ -5547,16 +5286,16 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						for (int ii = 0; ii < n; ++ii)
 						{
 							XOR_STEP(st_ik);
-							float rnd = static_cast<float>(st_ik & 0xFFFFFFu) * 5.9604645e-8f;
-							noisy_angles[ii] = angles_ccd[ii] + (2.0f * rnd - 1.0f) * 0.1f;
+							float rnd = fmaf(static_cast<float>(st_ik & 0xFFFFFFu), 5.9604645e-8f, 0.0f);
+							noisy_angles[ii] = fmaf(rnd, 0.2f, angles_ccd[ii] - 0.1f);
 						}
 						if (cost.variableLen)
 						{
 							for (int ii = 0; ii < n; ++ii)
 							{
 								XOR_STEP(st_ik);
-								float rnd = static_cast<float>(st_ik & 0xFFFFFFu) * 5.9604645e-8f;
-								noisy_lengths[ii] = lengths_ccd[ii] + (2.0f * rnd - 1.0f) * 0.05f;
+								float rnd = fmaf(static_cast<float>(st_ik & 0xFFFFFFu), 5.9604645e-8f, 0.0f);
+								noisy_lengths[ii] = fmaf(rnd, 0.1f, lengths_ccd[ii] - 0.05f);
 							}
 						}
 						__declspec(align(32)) float q_temp[AGP_MAX_FULL_DIM];
@@ -5587,16 +5326,16 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						for (int ii = 0; ii < n; ++ii)
 						{
 							XOR_STEP(st_ik);
-							float rnd = static_cast<float>(st_ik & 0xFFFFFFu) * 5.9604645e-8f;
-							noisy_angles[ii] = angles_fabrik[ii] + (2.0f * rnd - 1.0f) * 0.06f;
+							float rnd = fmaf(static_cast<float>(st_ik & 0xFFFFFFu), 5.9604645e-8f, 0.0f);
+							noisy_angles[ii] = fmaf(rnd, 0.06f, angles_fabrik[ii] - 0.03f);
 						}
 						if (cost.variableLen)
 						{
 							for (int ii = 0; ii < n; ++ii)
 							{
 								XOR_STEP(st_ik);
-								float rnd = static_cast<float>(st_ik & 0xFFFFFFu) * 5.9604645e-8f;
-								noisy_lengths[ii] = lengths_fabrik[ii] + (2.0f * rnd - 1.0f) * 0.03f;
+								float rnd = fmaf(static_cast<float>(st_ik & 0xFFFFFFu), 5.9604645e-8f, 0.0f);
+								noisy_lengths[ii] = fmaf(rnd, 0.06f, lengths_fabrik[ii] - 0.03f);
 							}
 						}
 						__declspec(align(32)) float q_temp[AGP_MAX_FULL_DIM];
@@ -5613,13 +5352,13 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			{
 				float t_center = t_seeds[s];
 				float interval_size = stagnation_seed_interval;
-				float t1b = agp_clamp_unit_open_scalar(t_center - 0.5f * interval_size);
-				float t2b = agp_clamp_unit_open_scalar(t_center + 0.5f * interval_size);
-				float mid = 0.5f * (t1b + t2b);
+				float t1b = agp_clamp_unit_open_scalar(fmaf(-interval_size, 0.5f, t_center));
+				float t2b = agp_clamp_unit_open_scalar(fmaf(interval_size, 0.5f, t_center));
+				float mid = fmaf(t1b, 0.5f, fmaf(t2b, 0.5f, 0.0f));
 				TrialPoint left_tp = evaluate_trial_from_t(t1b, t1b, mid, true);
 				TrialPoint right_tp = evaluate_trial_from_t(t2b, mid, t2b, true);
 				IntervalND* I = make_interval_from_trials(left_tp, right_tp);
-				if (I == nullptr) continue;
+				if (!static_cast<bool>(I)) continue;
 				update_pockets_and_Mmax(I);
 				I->ChangeCharacteristic(fmaf(r_eff, Mmax, 0.0f));
 				I->R = fmaf(I->R, fmaf(0.01f, dim_f, 0.85f), 0.0f);
@@ -5629,95 +5368,96 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			no_improve = 0;
 		}
 
-		float bestFOld = bestF;
-		const bool do_hj_this_iter = adaptive && ((it & 1) == 0);
-		if (do_hj_this_iter) run_hooke_jeeves_iteration(r_eff, adaptive_coeff_, p);
+		const float bestFOld = bestF;
+		if (adaptive && (!(it & 1))) run_hooke_jeeves_iteration(r_eff, adaptive_coeff_, p);
 		else
 		{
 			IntervalND* cur = heap_pop_front(H);
-			float x1 = cur->x1, x2 = cur->x2, y1 = cur->y1, y2 = cur->y2;
-			float m = fmaf(r_eff, Mmax, 0.0f);
-			float tBase = step(m, x1, x2, y1, y2, static_cast<unsigned>(dim), r_eff, cur->idx1, cur->idx2);
-			TrialPoint trNew = evaluate_trial_from_t(tBase, x1, x2, true);
+			const float x1 = cur->x1, x2 = cur->x2, y1 = cur->y1, y2 = cur->y2;
+			const float m = fmaf(r_eff, Mmax, 0.0f);
+			const float tBase = step(m, x1, x2, y1, y2, static_cast<unsigned>(dim), r_eff, cur->idx1, cur->idx2);
+			const TrialPoint trNew = evaluate_trial_from_t(tBase, x1, x2, true);
 			const unsigned long long mid_i = agp_t_to_firstchunk_idx_open(map, trNew.t);
-			IntervalND* L = IntervalND::Make(x1, trNew.t, y1, trNew.f, cur->idx1, trNew.idx);
-			if (!finalize_interval_geometry_from_cells(L, cur->i1, mid_i))
+
+			IntervalND* L = nullptr;
+			IntervalND* Rv = nullptr;
+
+			if (agp_can_have_positive_diameter(map, x1, trNew.t))
 			{
-				L = nullptr;
+				L = IntervalND::Make(x1, trNew.t, y1, trNew.f, cur->idx1, trNew.idx);
+				if (!finalize_interval_geometry_from_cells(L, cur->i1, mid_i)) L = nullptr;
 			}
-			IntervalND* Rv = IntervalND::Make(trNew.t, x2, trNew.f, y2, trNew.idx, cur->idx2);
-			if (!finalize_interval_geometry_from_cells(Rv, mid_i, cur->i2))
+			if (agp_can_have_positive_diameter(map, trNew.t, x2))
 			{
-				Rv = nullptr;
+				Rv = IntervalND::Make(trNew.t, x2, trNew.f, y2, trNew.idx, cur->idx2);
+				if (!finalize_interval_geometry_from_cells(Rv, mid_i, cur->i2)) Rv = nullptr;
 			}
+
 			if (L == nullptr && Rv == nullptr)
 			{
 			}
 			else if (L == nullptr || Rv == nullptr)
 			{
-				IntervalND* only = (L != nullptr) ? L : Rv;
+				IntervalND* only = (static_cast<bool>(L)) ? L : Rv;
 				const float prevMmax = Mmax;
 				update_pockets_and_Mmax(only);
-				m = fmaf(r_eff, Mmax, 0.0f);
-				float len = only->x2 - only->x1;
-				if (len + 1e-7f >= dmax)
-				{
-					dmax = len;
-				}
+				const float len = only->x2 - only->x1;
+				if (len > dmax) dmax = len;
 				if ((p > 0.7f && !(it % 3) && dmax < 0.7f) || p > 0.9f)
 				{
-					float alpha = fmaf(p, p, 0.0f);
-					float beta = fmaf(-alpha, 1.0f, 2.0f);
-					float MULT = fmaf((1.0f / dmax), Mmax, 0.0f);
-					float global_coeff = fmaf(MULT, r_eff, -MULT);
-					float GF = beta * global_coeff;
+					const float alpha = fmaf(p, p, 0.0f);
+					const float beta = fmaf(-alpha, 1.0f, 2.0f);
+					const float MULT = fmaf((1.0f / dmax), Mmax, 0.0f);
+					const float global_coeff = fmaf(MULT, r_eff, -MULT);
+					const float GF = beta * global_coeff;
 					only->ChangeCharacteristic(fmaf(GF, only->N_factor, fmaf(only->M, alpha, 0.0f)));
-					size_t sz = H.size();
-					RecomputeR_AffineM_Mixed_ND(H.data(), sz, GF, alpha);
+					RecomputeR_AffineM_Mixed_ND(H.data(), H.size(), GF, alpha);
 					heap_make(H);
 				}
 				else
 				{
-					only->ChangeCharacteristic(m);
-					if (only->M > fmaf(adaptive_coeff_, prevMmax, 0.0f)) recompute_heap_constM(m);
+					const float m_cur = fmaf(r_eff, Mmax, 0.0f);
+					only->ChangeCharacteristic(m_cur);
+					if (only->M > fmaf(adaptive_coeff_, prevMmax, 0.0f)) recompute_heap_constM(m_cur);
 				}
 				heap_push(H, only);
 			}
 			else
 			{
-				float Mloc = fmaxf(L->M, Rv->M);
+				const float Mloc = fmaxf(L->M, Rv->M);
 				const float prevMmax = Mmax;
 				update_pockets_and_Mmax(L);
 				update_pockets_and_Mmax(Rv);
-				m = fmaf(r_eff, Mmax, 0.0f);
-				float len1 = fmaf(trNew.t, 1.0f, -x1), len2 = fmaf(x2, 1.0f, -trNew.t);
-				if (fmaf(len1, 1.0f, len2) + 1e-7f >= dmax)
+				const float len1 = trNew.t - x1;
+				const float len2 = x2 - trNew.t;
+				if (len1 + len2 > dmax)
 				{
 					dmax = fmaxf(len1, len2);
 					for (auto* pI : H)
 					{
-						float Ls = fmaf(pI->x2, 1.0f, -pI->x1);
+						const float Ls = pI->x2 - pI->x1;
 						if (Ls > dmax) dmax = Ls;
 					}
 				}
+
 				if ((p > 0.7f && !(it % 3) && dmax < 0.7f) || p > 0.9f)
 				{
-					float alpha = fmaf(p, p, 0.0f);
-					float beta = fmaf(-alpha, 1.0f, 2.0f);
-					float MULT = fmaf((1.0f / dmax), Mmax, 0.0f);
-					float global_coeff = fmaf(MULT, r_eff, -MULT);
-					float GF = beta * global_coeff;
+					const float alpha = fmaf(p, p, 0.0f);
+					const float beta = fmaf(-alpha, 1.0f, 2.0f);
+					const float MULT = fmaf((1.0f / dmax), Mmax, 0.0f);
+					const float global_coeff = fmaf(MULT, r_eff, -MULT);
+					const float GF = beta * global_coeff;
 					L->ChangeCharacteristic(fmaf(GF, L->N_factor, fmaf(L->M, alpha, 0.0f)));
 					Rv->ChangeCharacteristic(fmaf(GF, Rv->N_factor, fmaf(Rv->M, alpha, 0.0f)));
-					size_t sz = H.size();
-					RecomputeR_AffineM_Mixed_ND(H.data(), sz, GF, alpha);
+					RecomputeR_AffineM_Mixed_ND(H.data(), H.size(), GF, alpha);
 					heap_make(H);
 				}
 				else
 				{
-					L->ChangeCharacteristic(m);
-					Rv->ChangeCharacteristic(m);
-					if (Mloc > fmaf(adaptive_coeff_, prevMmax, 0.0f)) recompute_heap_constM(m);
+					const float m_cur = fmaf(r_eff, Mmax, 0.0f);
+					L->ChangeCharacteristic(m_cur);
+					Rv->ChangeCharacteristic(m_cur);
+					if (Mloc > fmaf(adaptive_coeff_, prevMmax, 0.0f)) recompute_heap_constM(m_cur);
 				}
 				heap_push(H, L);
 				heap_push(H, Rv);
@@ -5774,11 +5514,11 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					IntervalND* I = H[idx];
 					const float center = fmaf(I->x1, 0.5f, fmaf(I->x2, 0.5f, 0.0f));
 					const float len = I->x2 - I->x1;
-					const float size = len * static_cast<float>(1 << I->span_level);
+					const float size = fmaf(static_cast<float>(1 << I->span_level), len, 0.0f);
 
 					if (p < 0.95f && num_bins > 1)
 					{
-						float bin = floorf(center * static_cast<float>(num_bins));
+						float bin = floorf(fmaf(static_cast<float>(num_bins), center, 0.0f));
 						if (bin >= static_cast<float>(num_bins)) bin = static_cast<float>(num_bins - 1);
 						pos_metric[idx] = bin / static_cast<float>(num_bins - 1);
 					}
@@ -5804,9 +5544,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 				for (size_t idx = 0u; idx < scan_count; ++idx)
 				{
-					R_norm[idx] = (R_val[idx] - R_min) * inv_R_range;
-					pos_norm[idx] = (pos_metric[idx] - pos_min) * inv_pos_range;
-					size_norm[idx] = (size_metric[idx] - size_min) * inv_size_range;
+					R_norm[idx] = fmaf(-inv_R_range, R_min, fmaf(inv_R_range, R_val[idx], 0.0f));
+					pos_norm[idx] = fmaf(-inv_pos_range, pos_min, fmaf(inv_pos_range, pos_metric[idx], 0.0f));
+					size_norm[idx] = fmaf(-inv_size_range, size_min, fmaf(inv_size_range, size_metric[idx], 0.0f));
 				}
 
 				const float inv_sqrt_wsum = 1.0f / sqrtf(w_pos + w_size);
@@ -5827,14 +5567,13 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						for (int s : selected)
 						{
 							float d = pos_norm[idx] - pos_norm[static_cast<size_t>(s)];
-							float d2 = w_pos * d * d;
+							float d2 = fmaf(fmaf(w_pos, d, 0.0f), d, 0.0f);
 							d = size_norm[idx] - size_norm[static_cast<size_t>(s)];
-							d2 += w_size * d * d;
+							d2 += fmaf(fmaf(w_size, d, 0.0f), d, 0.0f);
 							if (d2 < min_dist) min_dist = d2;
 						}
 
-						const float novelty = sqrtf(min_dist) * inv_sqrt_wsum;
-						const float score = alpha * R_norm[idx] + beta * novelty;
+						const float score = fmaf(fmaf(sqrtf(min_dist), inv_sqrt_wsum, 0.0f), beta, fmaf(R_norm[idx], alpha, 0.0f));
 						if (score > best_score)
 						{
 							best_score = score;
@@ -5847,7 +5586,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					used[static_cast<size_t>(best_idx)] = 1u;
 				}
 
-				MultiCrossMsg out{};
+				MultiCrossMsg out;
 				out.count = static_cast<unsigned>(selected.size());
 
 				for (unsigned s = 0u; s < out.count; ++s)
@@ -5857,7 +5596,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 				size_t iterations = comm_levels;
 				bool active = true;
-				bool invert_T = ((static_cast<int>(exchange_counter_T) + 1) & 1) != 0;
+				bool invert_T = static_cast<bool>((static_cast<int>(exchange_counter_T) + 1) & 1);
 				size_t ii2 = 0u;
 				while (ii2 < iterations && active)
 				{
@@ -5889,7 +5628,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				progress_outgoing();
 				size_t iterations = comm_levels;
 				bool active = true;
-				bool invert_best = ((static_cast<int>(exchange_counter) + 1) & 1) != 0;
+				bool invert_best = static_cast<bool>((static_cast<int>(exchange_counter) + 1) & 1);
 				size_t ii2 = 0u;
 				while (ii2 < iterations && active)
 				{
@@ -5923,7 +5662,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 			while (g_world->iprobe(boost::mpi::any_source, 0))
 			{
-				MultiCrossMsg in{};
+				MultiCrossMsg in;
 				g_world->recv(boost::mpi::any_source, 0, in);
 
 				for (unsigned ii = 0u; ii < in.count; ++ii)
@@ -5966,7 +5705,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 	int n,
 	bool variableLengths,
-	float minTheta,
+	float maxTheta,
 	float tx,
 	float ty,
 	int maxIter,
@@ -5978,7 +5717,6 @@ extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 	float stretchFactor,
 	float* obstacleData,
 	unsigned obstacleCount,
-	int constraintMode,
 	float** out_bestQ,
 	float* out_bestX,
 	float* out_bestY,
@@ -6011,8 +5749,8 @@ extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 	__pragma(loop(ivdep))
 		for (int i = 0; i < n; ++i)
 		{
-			low[i] = -minTheta;
-			high[i] = minTheta;
+			low[i] = -maxTheta;
+			high[i] = i ? 0.0f : maxTheta;
 		}
 	if (variableLengths)
 	{
@@ -6028,8 +5766,8 @@ extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 			}
 	}
 
-	ManipCost cost(n, variableLengths, tx, ty, minTheta, baseLength, stretchFactor,
-		obstacleData, obstacleCount, constraintMode, mode);
+	ManipCost cost(n, variableLengths, tx, ty, maxTheta, baseLength, stretchFactor,
+		obstacleData, obstacleCount, mode);
 
 	if (mode) cost.SetTransitionReference(referenceStates);
 
@@ -6061,7 +5799,7 @@ extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 	const float M_arg = ldexpf(1.0f, -levels0);
 	const float maxLinkLength = variableLengths ? baseLength * stretchFactor : baseLength;
 	const float M_prior = fmaf(
-		fmaf(variableLengths ? 2.8284271f : 2.0f, static_cast<float>(n) * maxLinkLength, 0.0f),
+		fmaf(variableLengths ? 2.8284271f : 2.0f, fmaf(static_cast<float>(n), maxLinkLength, 0.0f), 0.0f),
 		fmaf(M_arg,
 			fmaf(M_arg,
 				fmaf(M_arg,
@@ -6092,7 +5830,7 @@ extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 	MortonND map1(dim, fine_lvls, low, high, mc);
 
 	oi = 0u; oe = 0.0f;
-	const float M_prior_fine = fmaf(1.0f / fine_lvls, static_cast<float>(levels0) * M_prior, 0.0f);
+	const float M_prior_fine = fmaf(1.0f / fine_lvls, fmaf(static_cast<float>(levels0), M_prior, 0.0f), 0.0f);
 
 	char* saved2 = slab->current;
 	agp_run_branch_mpi(map1, cost, fineIter, r_param, adaptive, eps, seed,
@@ -6115,7 +5853,7 @@ extern "C" __declspec(dllexport) __declspec(noalias) void AGP_Manip2D(
 			const int partner = rank ^ static_cast<int>(step);
 			if (partner < world)
 			{
-				if ((rank & static_cast<int>(step)) != 0)
+				if (static_cast<bool>(rank & static_cast<int>(step)))
 				{
 					g_world->send(partner, 3, best);
 					return;
@@ -6153,46 +5891,13 @@ extern "C" __declspec(dllexport) __declspec(noalias) __forceinline int AgpInit()
 	g_world = new boost::mpi::communicator();
 	_MM_SET_FLUSH_ZERO_MODE(_MM_FLUSH_ZERO_ON);
 	_MM_SET_DENORMALS_ZERO_MODE(_MM_DENORMALS_ZERO_ON);
-	const int rank = g_world->rank();
-	if (rank == 0)
-	{
-		char buf[MAX_PATH];
-		const DWORD len = GetModuleFileNameA(nullptr, buf, MAX_PATH);
-		char* const last_slash = strrchr(buf, '\\');
-		*last_slash = '\0';
-		const size_t dirLen = last_slash - buf;
-		g_pyInterpreter = new pybind11::scoped_interpreter{};
-		pybind11::module_ sys = pybind11::module_::import("sys");
-		pybind11::list path = sys.attr("path");
-		__declspec(align(32)) char stackBuf[MAX_PATH + 24];
-		const char* const pDir = buf;
-		memcpy(stackBuf, pDir, dirLen);
-		static constexpr char SUFFIX1[] = "\\env\\Lib\\site-packages";
-		static constexpr size_t SUFFIX1_LEN = sizeof(SUFFIX1) - 1;
-		memcpy(stackBuf + dirLen, SUFFIX1, SUFFIX1_LEN);
-		stackBuf[dirLen + SUFFIX1_LEN] = '\0';
-		path.attr("insert")(0, pybind11::str(stackBuf, dirLen + SUFFIX1_LEN));
-		static constexpr char SUFFIX2[] = "\\env\\Scripts";
-		static constexpr size_t SUFFIX2_LEN = sizeof(SUFFIX2) - 1;
-		memcpy(stackBuf + dirLen, SUFFIX2, SUFFIX2_LEN);
-		stackBuf[dirLen + SUFFIX2_LEN] = '\0';
-		path.attr("insert")(0, pybind11::str(stackBuf, dirLen + SUFFIX2_LEN));
-		static constexpr char SUFFIX3[] = "\\env";
-		static constexpr size_t SUFFIX3_LEN = sizeof(SUFFIX3) - 1;
-		memcpy(stackBuf + dirLen, SUFFIX3, SUFFIX3_LEN);
-		stackBuf[dirLen + SUFFIX3_LEN] = '\0';
-		path.attr("insert")(0, pybind11::str(stackBuf, dirLen + SUFFIX3_LEN));
-		path.attr("append")(pybind11::str(buf, dirLen));
-		pybind11::module_::import("warnings").attr("filterwarnings")("ignore");
-		g_pyOptimizerBridge = new pybind11::module_(pybind11::module_::import("optimizer_bridge"));
-	}
-	return rank;
+	return g_world->rank();
 }
 
 __declspec(align(32)) struct RunParams final
 {
 	unsigned nSegments, varLen;
-	float minTheta, tx, ty;
+	float maxTheta, tx, ty;
 	int maxIter;
 	float r;
 	unsigned adaptive;
@@ -6200,7 +5905,6 @@ __declspec(align(32)) struct RunParams final
 	unsigned seed;
 	float baseLength, stretchFactor, obstacleData[MAX_OBSTACLES * 3u];
 	unsigned obstacleCount;
-	int constraintMode;
 	int mode;
 	float referenceStates[AGP_MAX_FULL_DIM];
 	float finalStates[AGP_MAX_FULL_DIM];
@@ -6210,7 +5914,7 @@ __declspec(align(32)) struct RunParams final
 	{
 		ar& nSegments
 			& varLen
-			& minTheta
+			& maxTheta
 			& tx
 			& ty
 			& maxIter
@@ -6222,7 +5926,6 @@ __declspec(align(32)) struct RunParams final
 			& stretchFactor
 			& obstacleData
 			& obstacleCount
-			& constraintMode
 			& mode
 			& referenceStates
 			& finalStates;
@@ -6233,7 +5936,7 @@ extern "C" __declspec(dllexport) __declspec(noalias) __forceinline
 void AgpStartManipND(
 	int n,
 	bool variableLengths,
-	float minTheta,
+	float maxTheta,
 	float tx,
 	float ty,
 	int maxIter,
@@ -6245,15 +5948,14 @@ void AgpStartManipND(
 	float stretchFactor,
 	const float* obstacleData,
 	int obstacleCount,
-	int constraintMode,
 	int mode,
 	float referenceStates[AGP_MAX_FULL_DIM],
 	float finalStates[AGP_MAX_FULL_DIM]) noexcept
 {
-	RunParams p{};
+	RunParams p;
 	p.nSegments = static_cast<unsigned>(n);
 	p.varLen = static_cast<unsigned>(variableLengths);
-	p.minTheta = minTheta;
+	p.maxTheta = maxTheta;
 	p.tx = tx;
 	p.ty = ty;
 	p.maxIter = maxIter;
@@ -6265,7 +5967,6 @@ void AgpStartManipND(
 	p.stretchFactor = stretchFactor;
 	if (obstacleData) memcpy(p.obstacleData, obstacleData, static_cast<size_t>(obstacleCount) * 3ull * sizeof(float));
 	p.obstacleCount = obstacleCount;
-	p.constraintMode = constraintMode;
 	p.mode = mode;
 	if (referenceStates) memcpy(p.referenceStates, referenceStates, (n << 1) * sizeof(float));
 	if (finalStates) memcpy(p.finalStates, finalStates, (n << 1) * sizeof(float));
@@ -6279,12 +5980,12 @@ void AgpStartManipND(
 }
 
 extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
-	int n, bool variableLengths, float minTheta,
+	int n, bool variableLengths, float maxTheta,
 	const float* startState,
 	const float* finalState,
 	int maxIter, float r_param, bool adaptive, float eps, unsigned int seed,
 	float baseLength, float stretchFactor,
-	const float* obstacleData, int obstacleCount, int constraintMode,
+	const float* obstacleData, int obstacleCount,
 	float** outPoints, int* outPointCount,
 	size_t* outTotalIterations) noexcept
 {
@@ -6309,8 +6010,8 @@ extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
 	{
 		generation = currentGen;
 		lastRef = nullptr;
-		new (_tempCost) ManipCost(n, variableLengths, 0.0f, 0.0f, minTheta, baseLength, stretchFactor,
-			const_cast<float*>(obstacleData), obstacleCount, constraintMode, 2);
+		new (_tempCost) ManipCost(n, variableLengths, 0.0f, 0.0f, maxTheta, baseLength, stretchFactor,
+			const_cast<float*>(obstacleData), obstacleCount, 2);
 	}
 
 	struct alignas(64) TrajConfig
@@ -6342,8 +6043,8 @@ extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
 			{
 				generation = currentGen;
 				lastRef = nullptr;
-				new (&tempCost) ManipCost(n, variableLengths, 0.0f, 0.0f, minTheta, baseLength, stretchFactor,
-					const_cast<float*>(obstacleData), obstacleCount, constraintMode, 2);
+				new (&tempCost) ManipCost(n, variableLengths, 0.0f, 0.0f, maxTheta, baseLength, stretchFactor,
+					const_cast<float*>(obstacleData), obstacleCount, 2);
 			}
 			if (lastRef != a.state.data())
 			{
@@ -6351,7 +6052,7 @@ extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
 				lastRef = a.state.data();
 			}
 			unsigned out_idx; float out_val;
-			if (tempCost.evaluate_transition_swept_motion(b.state.data(), b.x, b.y, b.clearance, out_idx, out_val, nullptr))
+			if (tempCost.evaluate_transition_swept_motion(b.state.data(), b.x, b.y, b.clearance, out_idx, out_val))
 			{
 				totalEnergyAtomic.fetch_add(b.cost, std::memory_order_relaxed);
 				out.emplace_back(b);
@@ -6376,11 +6077,11 @@ extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
 
 			const int iterBudget = std::max(maxIter >> depth, 100);
 
-			AGP_Manip2D(n, variableLengths, minTheta, mid.x, mid.y,
+			AGP_Manip2D(n, variableLengths, maxTheta, mid.x, mid.y,
 				iterBudget, r_param, adaptive,
 				eps, seed,
 				baseLength, stretchFactor,
-				const_cast<float*>(obstacleData), obstacleCount, constraintMode,
+				const_cast<float*>(obstacleData), obstacleCount,
 				&midBestQ, &midBestX, &midBestY, &midBestF, &midActualIterations, &midAchievedEps,
 				2, a.state.data());
 			totalIterationsAtomic.fetch_add(midActualIterations, std::memory_order_relaxed);
@@ -6487,7 +6188,7 @@ extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
 			const int partner = rank ^ static_cast<int>(step);
 			if (partner < world)
 			{
-				if ((rank & static_cast<int>(step)) != 0)
+				if (static_cast<bool>(rank & static_cast<int>(step)))
 				{
 					g_world->send(partner, 5, sendBuffer.data(), static_cast<int>(maxBufferSize));
 					return;
@@ -6536,7 +6237,7 @@ void AgpWaitStartAndRun() noexcept
 	{
 		if (g_world->iprobe(0, 1))
 		{
-			RunParams p{};
+			RunParams p;
 			g_world->recv(0, 1, p);
 			const int n = static_cast<int>(p.nSegments);
 			const bool varLen = static_cast<bool>(p.varLen);
@@ -6547,11 +6248,11 @@ void AgpWaitStartAndRun() noexcept
 				int pointCount = 0;
 				size_t totalIterations = 0;
 				AGP_BuildTransitionTrajectory(
-					n, varLen, p.minTheta,
+					n, varLen, p.maxTheta,
 					p.referenceStates, p.finalStates,
 					p.maxIter, p.r, static_cast<bool>(p.adaptive), p.eps, p.seed,
 					p.baseLength, p.stretchFactor,
-					p.obstacleData, p.obstacleCount, p.constraintMode,
+					p.obstacleData, p.obstacleCount,
 					&outPoints, &pointCount, &totalIterations);
 			}
 			else
@@ -6562,108 +6263,14 @@ void AgpWaitStartAndRun() noexcept
 				size_t oi;
 				float oa;
 				AGP_Manip2D(
-					n, varLen, p.minTheta, p.tx, p.ty,
+					n, varLen, p.maxTheta, p.tx, p.ty,
 					p.maxIter, p.r, static_cast<bool>(p.adaptive), p.eps, p.seed,
 					p.baseLength, p.stretchFactor,
-					p.obstacleData, p.obstacleCount, p.constraintMode,
+					p.obstacleData, p.obstacleCount,
 					&q, &bx, &by, &bf, &oi, &oa,
 					p.mode, p.referenceStates);
 			}
 		}
 		Sleep(0);
-	}
-}
-
-extern "C" __declspec(dllexport) __declspec(noalias) void RunPythonOptimization(
-	const char* backend,
-	int nSeg,
-	bool varLen,
-	float minTheta,
-	float tx,
-	float ty,
-	int levels,
-	int maxIter,
-	float r_param,
-	float eps,
-	bool adaptive,
-	float baseLength,
-	float stretchFactor,
-	const float* obstacleData,
-	int obstacleCount,
-	int constraintMode,
-	unsigned int optunaSeed,
-	float* outBestF,
-	float* outBestX,
-	float* outBestY,
-	float* outAngles,
-	float* outLengths,
-	int* outIterations,
-	float* outAchievedEps,
-	float* outMicros) noexcept
-{
-	const size_t n = static_cast<size_t>(nSeg);
-	pybind11::gil_scoped_acquire gil;
-
-	pybind11::list py_obstacles;
-	for (int i = 0; i < obstacleCount; ++i)
-	{
-		const float* obs = obstacleData + (static_cast<size_t>(i) * 3u);
-		py_obstacles.append(pybind11::make_tuple(obs[0], obs[1], obs[2]));
-	}
-
-	pybind11::dict result;
-	if (backend[0] == 'o')
-	{
-		result = (*g_pyOptimizerBridge).attr("run_optuna")(
-			nSeg, varLen, minTheta, tx, ty,
-			maxIter, baseLength, stretchFactor,
-			py_obstacles, constraintMode, pybind11::int_(optunaSeed));
-	}
-	else
-	{
-		result = (*g_pyOptimizerBridge).attr("run_iopt")(
-			nSeg, varLen, minTheta, tx, ty,
-			levels, maxIter, r_param, eps, adaptive,
-			baseLength, stretchFactor,
-			py_obstacles, constraintMode);
-	}
-
-	*outBestF = result["BEST_F"].cast<float>();
-	*outBestX = result["BEST_X"].cast<float>();
-	*outBestY = result["BEST_Y"].cast<float>();
-	*outIterations = result["ITERATIONS"].cast<int>();
-	*outAchievedEps = result["EPS"].cast<float>();
-	*outMicros = result["TIME"].cast<float>();
-
-	const std::vector<float> anglesVec = result["ANGLES"].cast<std::vector<float>>();
-	const size_t anglesSize = anglesVec.size();
-	if (anglesSize == n)
-	{
-		std::memcpy(outAngles, anglesVec.data(), n * sizeof(float));
-	}
-	else
-	{
-		std::memset(outAngles, 0, n * sizeof(float));
-	}
-
-	if (varLen)
-	{
-		const std::vector<float> lengthsVec = result["LENGTHS"].cast<std::vector<float>>();
-		const size_t lengthsSize = lengthsVec.size();
-		if (lengthsSize == n)
-		{
-			std::memcpy(outLengths, lengthsVec.data(), n * sizeof(float));
-		}
-		else
-		{
-			std::memset(outLengths, 0, n * sizeof(float));
-		}
-	}
-	else
-	{
-		for (size_t j = 0; j < n; ++j)
-		{
-			outLengths[j] = baseLength;
-		}
 	}
 }

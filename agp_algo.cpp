@@ -267,6 +267,7 @@ float agp_pow_u32(const float v, const unsigned n) noexcept
 
 static __declspec(noalias) __forceinline
 float step(const float _m,
+	const float invm,
 	const float x1,
 	const float x2,
 	const float y1,
@@ -282,7 +283,7 @@ float step(const float _m,
 	const float diff = y2 - y1;
 	const unsigned sign_bits = *reinterpret_cast<const unsigned*>(&diff) & 0x80000000u ^ 0x3f800000u;
 	const float sign_mult = *reinterpret_cast<const float*>(&sign_bits);
-	return fmaf(sign_mult * agp_pow_u32((1.0f / _m) * fabsf(diff), dim), _r, x1 + x2) * 0.5f;
+	return fmaf(sign_mult * agp_pow_u32(invm * fabsf(diff), dim), _r, x1 + x2) * 0.5f;
 }
 
 static __declspec(noalias) __forceinline
@@ -1569,9 +1570,9 @@ struct __declspec(align(64)) IntervalND final
 		unsigned span_pack;
 	};
 
-	static __forceinline IntervalND* Make(float _x1, float _x2,
-		float _y1, float _y2,
-		unsigned _idx1, unsigned _idx2) noexcept
+	static __forceinline IntervalND* Make(const float _x1, const float _x2,
+		const float _y1, const float _y2,
+		const unsigned _idx1, const unsigned _idx2) noexcept
 	{
 		Slab* s = tls.local();
 		char* r = s->current;
@@ -1580,7 +1581,7 @@ struct __declspec(align(64)) IntervalND final
 	}
 
 	__declspec(noalias) __forceinline
-		IntervalND(float _x1, float _x2, float _y1, float _y2, unsigned _idx1, unsigned _idx2) noexcept
+		IntervalND(const float _x1, const float _x2, const float _y1, const float _y2, const unsigned _idx1, const unsigned _idx2) noexcept
 		: x1(_x1)
 		, x2(_x2)
 		, y1(_y1)
@@ -1594,7 +1595,7 @@ struct __declspec(align(64)) IntervalND final
 	__declspec(noalias) __forceinline void compute_span_level(const struct MortonND& map) noexcept;
 
 	__declspec(noalias) __forceinline
-		void set_metric(float d_alpha) noexcept
+		void set_metric(const float d_alpha) noexcept
 	{
 		N_factor = d_alpha;
 		if (idx1 == idx2)
@@ -1611,21 +1612,21 @@ struct __declspec(align(64)) IntervalND final
 	}
 
 	__declspec(noalias) __forceinline
-		void ChangeCharacteristic(float _m) noexcept
+		void ChangeCharacteristic(const float _m, const float _inv_m) noexcept
 	{
-		if (idx1 == idx2) R = fmaf(1.0f / _m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
+		if (idx1 == idx2) R = fmaf(_inv_m, quadratic_term, fmaf(_m, N_factor, ordinate_factor));
 		else if (idx1 < idx2) R = fmaf(2.0f * _m, N_factor, -4.0f * y2);
 		else R = fmaf(2.0f * _m, N_factor, -4.0f * y1);
 	}
 
 	__declspec(noalias) __forceinline
-		void ChangeCharacteristicConstM(float m, float inv_m, float two_m) noexcept
+		void ChangeCharacteristicConstM(const float m, const float inv_m, const float two_m) noexcept
 	{
 		R = idx1 == idx2 ? fmaf(inv_m, quadratic_term, fmaf(m, N_factor, ordinate_factor)) : fmaf(two_m, N_factor, -4.0f * ((idx1 < idx2) ? y2 : y1));
 	}
 
 	__declspec(noalias) __forceinline
-		void ChangeCharacteristicAffine(float GF, float alpha) noexcept
+		void ChangeCharacteristicAffine(const float GF, const float alpha) noexcept
 	{
 		const float m = fmaf(GF, N_factor, alpha * M);
 		R = idx1 == idx2 ? fmaf(1.0f / m, quadratic_term, fmaf(m, N_factor, ordinate_factor)) : fmaf(2.0f * m, N_factor, -4.0f * ((idx1 < idx2) ? y2 : y1));
@@ -1778,11 +1779,12 @@ static __forceinline void agp_store8_R(
 static __declspec(noalias) __forceinline
 void RecomputeR_ConstM_Mixed_ND(
 	IntervalND** __restrict data,
-	size_t sz,
-	float m) noexcept
+	const size_t sz,
+	const float m,
+	const float inv_m) noexcept
 {
 	const __m256 vm = _mm256_set1_ps(m);
-	const __m256 vinv_m = _mm256_set1_ps(1.0f / m);
+	const __m256 vinv_m = _mm256_set1_ps(inv_m);
 	const __m256 vtwo_m = _mm256_set1_ps(m + m);
 	const __m256 vneg4 = _mm256_set1_ps(-4.0f);
 
@@ -1850,7 +1852,6 @@ void RecomputeR_ConstM_Mixed_ND(
 		i += 8u;
 	}
 
-	const float inv_m = 1.0f / m;
 	const float two_m = m + m;
 
 	while (i < sz)
@@ -3787,10 +3788,10 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			dmax = new_dmax;
 		};
 
-	auto recompute_heap_constM = [&](float m_cur) noexcept
+	auto recompute_heap_constM = [&](const float m_cur) noexcept
 		{
 			const size_t sz = H.size();
-			RecomputeR_ConstM_Mixed_ND(H.data(), sz, m_cur);
+			RecomputeR_ConstM_Mixed_ND(H.data(), sz, m_cur, 1.0f / m_cur);
 			heap_make(H);
 		};
 
@@ -4589,8 +4590,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				const float prevMmax = Mmax;
 
 				update_pockets_and_Mmax(only);
-				const float m_cur = fmaf(r_eff_cur, Mmax, 0.0f);
-				only->ChangeCharacteristic(m_cur);
+				const float m_cur = r_eff_cur * Mmax;
+				const float inv_m_cur = 1.0f / m_cur;
+				only->ChangeCharacteristic(m_cur, inv_m_cur);
 
 				H[0u] = only;
 				heap_fix_at(H, 0u);
@@ -4608,9 +4610,10 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			update_pockets_and_Mmax(L);
 			update_pockets_and_Mmax(Rv);
 
-			const float m_cur = fmaf(r_eff_cur, Mmax, 0.0f);
-			L->ChangeCharacteristic(m_cur);
-			Rv->ChangeCharacteristic(m_cur);
+			const float m_cur = r_eff_cur * Mmax;
+			const float inv_m_cur = 1.0f / m_cur;
+			L->ChangeCharacteristic(m_cur, inv_m_cur);
+			Rv->ChangeCharacteristic(m_cur, inv_m_cur);
 
 			H[0u] = L;
 			heap_fix_at(H, 0u);
@@ -4812,7 +4815,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	IntervalND* I = make_interval_from_trials(left_tp, right_tp);
 	if (static_cast<bool>(I)) {
 		update_pockets_and_Mmax(I);
-		I->ChangeCharacteristic(r * Mmax);
+		const float m_curr = r * Mmax;
+		const float inv_m_curr = 1.0f / m_curr;
+		I->ChangeCharacteristic(m_curr, inv_m_curr);
 		I->R = I->R * R_coeff_const;
 		H.push_back(I);
 	}
@@ -4828,7 +4833,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	I = make_interval_from_trials(left_tp, right_tp);
 	if (static_cast<bool>(I)) {
 		update_pockets_and_Mmax(I);
-		I->ChangeCharacteristic(r * Mmax);
+		const float m_curr = r * Mmax;
+		const float inv_m_curr = 1.0f / m_curr;
+		I->ChangeCharacteristic(m_curr, inv_m_curr);
 		I->R = I->R * R_coeff_const;
 		heap_push(H, I);
 	}
@@ -4844,7 +4851,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	I = make_interval_from_trials(left_tp, right_tp);
 	if (static_cast<bool>(I)) {
 		update_pockets_and_Mmax(I);
-		I->ChangeCharacteristic(r * Mmax);
+		const float m_curr = r * Mmax;
+		const float inv_m_curr = 1.0f / m_curr;
+		I->ChangeCharacteristic(m_curr, inv_m_curr);
 		I->R = I->R * R_coeff_const;
 		heap_push(H, I);
 	}
@@ -4869,7 +4878,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		if (!static_cast<bool>(I)) continue;
 
 		update_pockets_and_Mmax(I);
-		I->ChangeCharacteristic(r * Mmax);
+		const float m_curr = r * Mmax;
+		const float inv_m_curr = 1.0f / m_curr;
+		I->ChangeCharacteristic(m_curr, inv_m_curr);
 		I->R = I->R * start_mult * exp2f(B * static_cast<float>(i - 3u));
 		heap_push(H, I);
 	}
@@ -4915,7 +4926,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	{
 		IntervalND* I = make_interval_from_trials(grid_trials[i - 1u], grid_trials[i]);
 		update_pockets_and_Mmax(I);
-		I->ChangeCharacteristic(fmaf(r, Mmax, 0.0f));
+		const float m_curr = r * Mmax;
+		const float inv_m_curr = 1.0f / m_curr;
+		I->ChangeCharacteristic(m_curr, inv_m_curr);
 		heap_push(H, I);
 	}
 	recompute_dmax();
@@ -5298,7 +5311,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				IntervalND* I = make_interval_from_trials(left_tp, right_tp);
 				if (!static_cast<bool>(I)) continue;
 				update_pockets_and_Mmax(I);
-				I->ChangeCharacteristic(r_eff * Mmax);
+				const float m_curr = r_eff * Mmax;
+				const float inv_m_curr = 1.0f / m_curr;
+				I->ChangeCharacteristic(m_curr, inv_m_curr);
 				I->R = I->R * R_coeff_const;
 				heap_push(H, I);
 			}
@@ -5312,8 +5327,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		{
 			IntervalND* cur = heap_pop_front(H);
 			const float x1 = cur->x1, x2 = cur->x2, y1 = cur->y1, y2 = cur->y2;
-			const float m = fmaf(r_eff, Mmax, 0.0f);
-			const float tBase = step(m, x1, x2, y1, y2, static_cast<unsigned>(dim), r_eff, cur->idx1, cur->idx2);
+			const float m = r_eff * Mmax;
+			const float inv_m = 1.0f / m;
+			const float tBase = step(m, inv_m, x1, x2, y1, y2, static_cast<unsigned>(dim), r_eff, cur->idx1, cur->idx2);
 			const TrialPoint trNew = evaluate_trial_from_t(tBase, x1, x2);
 			const unsigned long long mid_i = agp_t_to_firstchunk_idx_open(map, trNew.t);
 
@@ -5343,20 +5359,23 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				if (len > dmax) dmax = len;
 				if ((p > 0.7f && !(it % 3) && dmax < 0.7f) || p > 0.9f)
 				{
-					const float alpha = fmaf(p, p, 0.0f);
+					const float alpha = p * p;
 					const float beta = fmaf(-alpha, 1.0f, 2.0f);
-					const float MULT = fmaf((1.0f / dmax), Mmax, 0.0f);
+					const float MULT = (1.0f / dmax) * Mmax;
 					const float global_coeff = fmaf(MULT, r_eff, -MULT);
 					const float GF = beta * global_coeff;
-					only->ChangeCharacteristic(fmaf(GF, only->N_factor, fmaf(only->M, alpha, 0.0f)));
+					const float m_curr = fmaf(GF, only->N_factor, only->M * alpha);
+					const float inv_m_curr = 1.0f / m_curr;
+					only->ChangeCharacteristic(m_curr, inv_m_curr);
 					RecomputeR_AffineM_Mixed_ND(H.data(), H.size(), GF, alpha);
 					heap_make(H);
 				}
 				else
 				{
-					const float m_cur = fmaf(r_eff, Mmax, 0.0f);
-					only->ChangeCharacteristic(m_cur);
-					if (only->M > fmaf(adaptive_coeff_, prevMmax, 0.0f)) recompute_heap_constM(m_cur);
+					const float m_curr = r_eff * Mmax;
+					const float inv_m_curr = 1.0f / m_curr;
+					only->ChangeCharacteristic(m_curr, inv_m_curr);
+					if (only->M > adaptive_coeff_ * prevMmax) recompute_heap_constM(m_curr);
 				}
 				heap_push(H, only);
 			}
@@ -5385,17 +5404,22 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					const float MULT = fmaf((1.0f / dmax), Mmax, 0.0f);
 					const float global_coeff = fmaf(MULT, r_eff, -MULT);
 					const float GF = beta * global_coeff;
-					L->ChangeCharacteristic(fmaf(GF, L->N_factor, fmaf(L->M, alpha, 0.0f)));
-					Rv->ChangeCharacteristic(fmaf(GF, Rv->N_factor, fmaf(Rv->M, alpha, 0.0f)));
+					const float m_curr_L = fmaf(GF, L->N_factor, L->M * alpha);
+					const float m_curr_Rv = fmaf(GF, Rv->N_factor, Rv->M * alpha);
+					const float inv_m_curr_L = 1.0f / m_curr_L;
+					const float inv_m_curr_Rv = 1.0f / m_curr_Rv;
+					L->ChangeCharacteristic(m_curr_L, inv_m_curr_L);
+					Rv->ChangeCharacteristic(m_curr_Rv, inv_m_curr_Rv);
 					RecomputeR_AffineM_Mixed_ND(H.data(), H.size(), GF, alpha);
 					heap_make(H);
 				}
 				else
 				{
-					const float m_cur = fmaf(r_eff, Mmax, 0.0f);
-					L->ChangeCharacteristic(m_cur);
-					Rv->ChangeCharacteristic(m_cur);
-					if (Mloc > fmaf(adaptive_coeff_, prevMmax, 0.0f)) recompute_heap_constM(m_cur);
+					const float m_curr = r_eff * Mmax;
+					const float inv_m_curr = 1.0f / m_curr;
+					L->ChangeCharacteristic(m_curr, inv_m_curr);
+					Rv->ChangeCharacteristic(m_curr, inv_m_curr);
+					if (Mloc > adaptive_coeff_ * prevMmax) recompute_heap_constM(m_curr);
 				}
 				heap_push(H, L);
 				heap_push(H, Rv);
@@ -5611,9 +5635,10 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					const int span = inj->span_level;
 					const float pocketM = (inj->M > M_by_span[span]) ? inj->M : M_by_span[span];
 					const float candidateMmax = (pocketM > Mmax) ? pocketM : Mmax;
-					const float m_inj = fmaf(r_eff, candidateMmax, 0.0f);
+					const float m_inj = r_eff * candidateMmax;
+					const float inv_m_inj = 1.0f / m_inj;
 
-					inj->ChangeCharacteristic(m_inj);
+					inj->ChangeCharacteristic(m_inj, inv_m_inj);
 
 					if (inj->R > fmaf(adaptive_coeff, H.front()->R, 0.0f) || stagnation)
 					{

@@ -19,9 +19,9 @@ using namespace System::Windows::Forms;
 using namespace System::Collections::Generic;
 using namespace System::Drawing::Drawing2D;
 using namespace System::Runtime::CompilerServices;
+using namespace System::Runtime::InteropServices;
 
 typedef void(__cdecl* P_MANIP)(int, bool, float, float, float, float, int, float, bool, float, unsigned int, float, float, const float*, int, float**, float*, float*, float*, float*, size_t*, float*, int, const float*);
-typedef void(__cdecl* P_FREE)(float*);
 typedef void(__cdecl* P_START)(int, bool, float, float, float, float, int, float, bool, float, unsigned int, float, float, const float*, int, int, const float*, const float*);
 typedef void(__cdecl* P_BUILD_TRAJECTORY)(int, bool, float, const float*, const float*, int, float, bool, float, unsigned int, float, float, const float*, int, float**, int*, size_t*);
 
@@ -280,7 +280,6 @@ namespace TESTAGP
 			this->MouseUp += gcnew MouseEventHandler(this, &MyForm::OnMouseUpPoint);
 
 			fManip = (P_MANIP)GetProcAddress(hLib, "AGP_Manip2D");
-			pFree = (P_FREE)GetProcAddress(hLib, "AGP_Free");
 			pStart = (P_START)GetProcAddress(hLib, "AgpStartManipND");
 			pBuildTrajectory = (P_BUILD_TRAJECTORY)GetProcAddress(hLib, "AGP_BuildTransitionTrajectory");
 
@@ -357,7 +356,6 @@ namespace TESTAGP
 		P_BUILD_TRAJECTORY pBuildTrajectory;
 		HMODULE hLib;
 		P_MANIP fManip;
-		P_FREE pFree;
 		P_START pStart;
 
 		TracIkRunner* tracIkRunner;
@@ -1027,7 +1025,7 @@ namespace TESTAGP
 					pose->Lengths[i] = baseLength;
 			}
 
-			pFree(bestQ);
+			Marshal::FreeCoTaskMem(IntPtr(bestQ));
 
 			pose->EndX = bestX;
 			pose->EndY = bestY;
@@ -1324,7 +1322,7 @@ namespace TESTAGP
 				startState[nSegments + i] = startPose->Lengths[i];
 			}
 
-			pFree(startQ);
+			Marshal::FreeCoTaskMem(IntPtr(startQ));
 
 			pStart(
 				nSegments,
@@ -1400,7 +1398,7 @@ namespace TESTAGP
 				finalState[nSegments + i] = finalPose->Lengths[i];
 			}
 
-			pFree(finalQ);
+			Marshal::FreeCoTaskMem(IntPtr(finalQ));
 
 			pStart(
 				nSegments,
@@ -1471,7 +1469,7 @@ namespace TESTAGP
 				plannedPoses->Add(pose);
 			}
 
-			pFree(trajPoints);
+			Marshal::FreeCoTaskMem(IntPtr(trajPoints));
 
 			plannedPoses[0]->EndX = startPose->EndX;
 			plannedPoses[0]->EndY = startPose->EndY;
@@ -2165,7 +2163,7 @@ namespace TESTAGP
 			array<PointF>^ pts =
 				gcnew array<PointF>(
 					drawableSegments + 1
-					);
+				);
 
 			pts[0] = PointF((float)baseX, (float)baseY);
 

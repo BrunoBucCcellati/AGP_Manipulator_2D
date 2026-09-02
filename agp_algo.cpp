@@ -29,6 +29,9 @@ static constexpr unsigned       MAX_OBSTACLES = 4u;
 static constexpr unsigned       AGP_MULTI_MAX_COUNT = 7u;
 static constexpr size_t         AGP_INTERVAL_SLAB_BYTES = 67108864u;
 static constexpr int            AGP_MAX_GENERATED_SEEDS = 64;
+static constexpr size_t         AGP_MAX_LBFGS_HISTORY = 16u;
+static constexpr int            LBFGS_M = 8;
+static constexpr int            AGP_SEED_STRIDE = 16;
 
 //============================================================
 //                     SIMD / MATH CONSTANTS
@@ -37,7 +40,7 @@ static __declspec(align(32)) const __m256   VEC_TWOPI = _mm256_set1_ps(6.2831853
 static __declspec(align(32)) const __m256   VEC_PI = _mm256_set1_ps(3.14159265358979323846f);
 static __declspec(align(32)) const __m256   VEC_PI_2 = _mm256_set1_ps(1.57079632679489661923f);
 static __declspec(align(32)) const __m256   INV_TWOPI = _mm256_set1_ps(0.15915494309189533577f);
-static __declspec(align(32)) const __m256   BIAS = _mm256_set1_ps(12582912.0f);
+static __declspec(align(32)) const __m256   VEC_BIAS = _mm256_set1_ps(12582912.0f);
 static __declspec(align(32)) const __m256   VEC_COS_P5 = _mm256_set1_ps(-0.0013888889f);
 static __declspec(align(32)) const __m256   VEC_COS_P3 = _mm256_set1_ps(0.0416666667f);
 static __declspec(align(32)) const __m256   VEC_COS_P1 = _mm256_set1_ps(-0.5f);
@@ -61,6 +64,8 @@ static __declspec(align(16)) const __m128   vtwo_pi4 = _mm_set1_ps(6.28318530717
 static constexpr float  TWO_PI = 6.28318530717958647692f;
 static constexpr float  PI = 3.14159265358979323846f;
 static constexpr float  PI_2 = 1.57079632679489661923f;
+static constexpr float  INV_TWO_PI = 0.15915494309189533577f;
+static constexpr float  BIAS = 12582912.0f;
 
 //============================================================
 //                     MATH MACROS & UTILITIES
@@ -75,9 +80,9 @@ float _r_;\
 if (_ax_ < TWO_PI) {\
     _r_ = _ax_;\
 } else {\
-    float _q_ = fmaf(_ax_, 0.15915494309189535f, 12582912.0f);\
-    _q_ -= 12582912.0f;\
-    _r_ = fmaf(-TWO_PI, _q_, _ax_);\
+    float _q_ = fmaf(_ax_, INV_TWO_PI, BIAS);\
+    _q_ -= BIAS;\
+    _r_ = fmaf(_q_, -TWO_PI, _ax_);\
 }\
 bool _sfl_ = _r_ > PI;\
 if (_sfl_)\
@@ -110,8 +115,8 @@ if (_n_ >= 8)\
         if (max_val < TWO_PI) {\
             _r_ = _vax_;\
         } else {\
-            __m256 _q_ = _mm256_fmadd_ps(_vax_, INV_TWOPI, BIAS);\
-            _q_ = _mm256_sub_ps(_q_, BIAS);\
+            __m256 _q_ = _mm256_fmadd_ps(_vax_, INV_TWOPI, VEC_BIAS);\
+            _q_ = _mm256_sub_ps(_q_, VEC_BIAS);\
             _r_ = _mm256_fnmadd_ps(VEC_TWOPI, _q_, _vax_);\
         }\
         const __m256 _r1_ =\
@@ -161,9 +166,9 @@ while (_i_ < _n_) {\
     if (_ax_ < TWO_PI) {\
         _r_ = _ax_;\
     } else {\
-        float _q_ = fmaf(_ax_, 0.15915494309189535f, 12582912.0f);\
-        _q_ -= 12582912.0f;\
-        _r_ = fmaf(-TWO_PI, _q_, _ax_);\
+        float _q_ = fmaf(_ax_, INV_TWO_PI, BIAS);\
+        _q_ -= BIAS;\
+        _r_ = fmaf(_q_, -TWO_PI, _ax_);\
     }\
     const bool _sflip_ = _r_ > PI;\
     if (_sflip_)\
@@ -188,83 +193,7 @@ while (_i_ < _n_) {\
     ++_i_;\
 }
 
-static __declspec(noalias) __forceinline
-float agp_pow_u32(const float v, const unsigned n) noexcept
-{
-	switch (n)
-	{
-	case 3u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		return fmaf(v2, v, 0.0f);
-	}
-	case 4u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		return fmaf(v2, v2, 0.0f);
-	}
-	case 5u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		return fmaf(fmaf(v4, v2, 0.0f), v, 0.0f);
-	}
-	case 6u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		return fmaf(v4, v2, 0.0f);
-	}
-	case 7u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		return fmaf(fmaf(v4, v2, 0.0f), v, 0.0f);
-	}
-	case 8u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		return fmaf(v4, v4, 0.0f);
-	}
-	case 9u: {
-		const float v3 = fmaf(fmaf(v, v, 0.0f), v, 0.0f);
-		const float v6 = fmaf(v3, v3, 0.0f);
-		return fmaf(v6, v3, 0.0f);
-	}
-	case 10u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		const float v8 = fmaf(v4, v4, 0.0f);
-		return fmaf(v8, v2, 0.0f);
-	}
-	case 11u: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		const float v8 = fmaf(v4, v4, 0.0f);
-		return fmaf(fmaf(v8, v2, 0.0f), v, 0.0f);
-	}
-	case 12u: {
-		const float v3 = fmaf(fmaf(v, v, 0.0f), v, 0.0f);
-		const float v6 = fmaf(v3, v3, 0.0f);
-		return fmaf(v6, v6, 0.0f);
-	}
-	case 13u: {
-		const float v3 = fmaf(fmaf(v, v, 0.0f), v, 0.0f);
-		const float v6 = fmaf(v3, v3, 0.0f);
-		return fmaf(fmaf(v6, v6, 0.0f), v, 0.0f);
-	}
-	case 14u: {
-		const float v7 = fmaf(fmaf(fmaf(fmaf(fmaf(fmaf(v, v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f);
-		return fmaf(v7, v7, 0.0f);
-	}
-	case 15u: {
-		const float v7 = fmaf(fmaf(fmaf(fmaf(fmaf(fmaf(v, v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f), v, 0.0f);
-		return fmaf(fmaf(v7, v7, 0.0f), v, 0.0f);
-	}
-	default: {
-		const float v2 = fmaf(v, v, 0.0f);
-		const float v4 = fmaf(v2, v2, 0.0f);
-		const float v8 = fmaf(v4, v4, 0.0f);
-		return fmaf(v8, v8, 0.0f);
-	}
-	}
-}
-
+template<int D>
 static __declspec(noalias) __forceinline
 float step(const float _m,
 	const float invm,
@@ -272,7 +201,6 @@ float step(const float _m,
 	const float x2,
 	const float y1,
 	const float y2,
-	const unsigned dim,
 	const float _r,
 	const unsigned idx1,
 	const unsigned idx2) noexcept
@@ -283,7 +211,25 @@ float step(const float _m,
 	const float diff = y2 - y1;
 	const unsigned sign_bits = *reinterpret_cast<const unsigned*>(&diff) & 0x80000000u ^ 0x3f800000u;
 	const float sign_mult = *reinterpret_cast<const float*>(&sign_bits);
-	return fmaf(sign_mult * agp_pow_u32(invm * fabsf(diff), dim), _r, x1 + x2) * 0.5f;
+	const float base = invm * fabsf(diff);
+	float pow_val;
+	if constexpr (D == 1)      pow_val = base;
+	else if constexpr (D == 2) pow_val = base * base;
+	else if constexpr (D == 3) { const float b2 = base * base; pow_val = b2 * base; }
+	else if constexpr (D == 4) { const float b2 = base * base; pow_val = b2 * b2; }
+	else if constexpr (D == 5) { const float b2 = base * base; const float b4 = b2 * b2; pow_val = b4 * base; }
+	else if constexpr (D == 6) { const float b3 = base * base * base; pow_val = b3 * b3; }
+	else if constexpr (D == 7) { const float b3 = base * base * base; const float b6 = b3 * b3; pow_val = b6 * base; }
+	else if constexpr (D == 8) { const float b2 = base * base; const float b4 = b2 * b2; pow_val = b4 * b4; }
+	else if constexpr (D == 9) { const float b3 = base * base * base; const float b6 = b3 * b3; pow_val = b6 * b3; }
+	else if constexpr (D == 10) { const float b2 = base * base; const float b4 = b2 * b2; const float b8 = b4 * b4; pow_val = b8 * b2; }
+	else if constexpr (D == 11) { const float b2 = base * base; const float b4 = b2 * b2; const float b8 = b4 * b4; pow_val = b8 * b2 * base; }
+	else if constexpr (D == 12) { const float b3 = base * base * base; const float b6 = b3 * b3; pow_val = b6 * b6; }
+	else if constexpr (D == 13) { const float b3 = base * base * base; const float b6 = b3 * b3; const float b12 = b6 * b6; pow_val = b12 * base; }
+	else if constexpr (D == 14) { const float b7 = base * base * base * base * base * base * base; pow_val = b7 * b7; }
+	else if constexpr (D == 15) { const float b7 = base * base * base * base * base * base * base; const float b14 = b7 * b7; pow_val = b14 * base; }
+	else { const float b2 = base * base; const float b4 = b2 * b2; const float b8 = b4 * b4; pow_val = b8 * b8; }
+	return fmaf(sign_mult * pow_val, _r, x1 + x2) * 0.5f;
 }
 
 static __declspec(noalias) __forceinline
@@ -1645,7 +1591,7 @@ void heap_sift_up(IntervalHeap& H, size_t pos) noexcept
 	{
 		const size_t parent = (pos - 1u) >> 1u;
 		IntervalND* p = H[parent];
-		if (!(p->R < vR)) break;
+		if (p->R > vR) break;
 		H[pos] = p;
 		pos = parent;
 	}
@@ -1664,33 +1610,16 @@ void heap_sift_down(IntervalHeap& H, size_t pos) noexcept
 	{
 		size_t best = child;
 		const size_t right = child + 1u;
-		if (right < n && H[right]->R < H[best]->R) {
+		if (right < n && H[best]->R < H[right]->R) {
 			best = right;
 		}
-		if (!(H[best]->R < vR)) break;
+		if (H[best]->R < vR) break;
 		H[pos] = H[best];
 		pos = best;
 		child = (pos << 1u) + 1u;
 	}
 
 	H[pos] = v;
-}
-
-static __declspec(noalias) __forceinline
-void heap_fix_at(IntervalHeap& H, size_t pos) noexcept
-{
-	if (H[(pos - 1u) >> 1u]->R < H[pos]->R)
-		heap_sift_up(H, pos);
-	else
-		heap_sift_down(H, pos);
-}
-
-static __declspec(noalias) __forceinline
-void heap_erase_at(IntervalHeap& H, size_t pos) noexcept
-{
-	H[pos] = H.back();
-	H.pop_back();
-	if (pos != H.size()) heap_fix_at(H, pos);
 }
 
 static __declspec(noalias) __forceinline
@@ -1714,7 +1643,7 @@ static __declspec(noalias) __forceinline
 IntervalND* heap_pop_front(IntervalHeap& H) noexcept
 {
 	IntervalND* top = H[0];
-	H[0] = H[H.size() - 1u];
+	H[0] = H.back();
 	H.pop_back();
 	heap_sift_down(H, 0u);
 	return top;
@@ -2124,27 +2053,36 @@ __declspec(align(32)) struct ManipCost final
 		float& out_y,
 		float& out_a,
 		float* __restrict px,
-		float* __restrict py) const noexcept
+		float* __restrict py, float* __restrict sin_out, float* __restrict cos_out) const noexcept
 	{
-		__declspec(align(32)) float phi[AGP_MAX_FULL_DIM], s_arr[AGP_MAX_FULL_DIM], c_arr[AGP_MAX_FULL_DIM];
-		float phi_acc = 0.0f;
+		__declspec(align(32)) float phi[AGP_MAX_FULL_DIM];
+		float phi_acc = 0.0f, x = 0.0f, y = 0.0f;
 		if constexpr (store)
 		{
 			px[0] = 0.0f;
 			py[0] = 0.0f;
 		}
 		agp_pose_prefix<0, N>(q, phi_acc, phi);
-		FABE13_SINCOS(phi, s_arr, c_arr, N);
-		float x = 0.0f, y = 0.0f;
-		if constexpr (VARLEN) agp_pose_accum_var<0, N, store>(q, s_arr, c_arr, x, y, px, py);
-		else                  agp_pose_accum_fixed<0, N, store>(q, s_arr, c_arr, x, y, px, py);
+		if (static_cast<bool>(sin_out))
+		{
+			FABE13_SINCOS(phi, sin_out, cos_out, N);
+			if constexpr (VARLEN) agp_pose_accum_var<0, N, store>(q, sin_out, cos_out, x, y, px, py);
+			else                  agp_pose_accum_fixed<0, N, store>(q, sin_out, cos_out, x, y, px, py);
+		}
+		else
+		{
+			__declspec(align(32)) float s_arr[AGP_MAX_FULL_DIM], c_arr[AGP_MAX_FULL_DIM];
+			FABE13_SINCOS(phi, s_arr, c_arr, N);
+			if constexpr (VARLEN) agp_pose_accum_var<0, N, store>(q, s_arr, c_arr, x, y, px, py);
+			else                  agp_pose_accum_fixed<0, N, store>(q, s_arr, c_arr, x, y, px, py);
+		}
 		out_x = x;
 		out_y = y;
 		out_a = phi_acc;
 	}
 
 	__declspec(noalias) __forceinline void compute_pose(const float* __restrict q, float& out_x, float& out_y, float& out_a,
-		float* __restrict px, float* __restrict py) const noexcept
+		float* __restrict px, float* __restrict py, float* __restrict sin_out, float* __restrict cos_out) const noexcept
 	{
 		const bool store = static_cast<bool>(px) && static_cast<bool>(py);
 		if (variableLen)
@@ -2153,44 +2091,44 @@ __declspec(align(32)) struct ManipCost final
 			{
 				switch (n)
 				{
-				case  1: agp_compute_pose_fixedn< 1, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  2: agp_compute_pose_fixedn< 2, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  3: agp_compute_pose_fixedn< 3, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  4: agp_compute_pose_fixedn< 4, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  5: agp_compute_pose_fixedn< 5, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  6: agp_compute_pose_fixedn< 6, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  7: agp_compute_pose_fixedn< 7, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  8: agp_compute_pose_fixedn< 8, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case  9: agp_compute_pose_fixedn< 9, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case 10: agp_compute_pose_fixedn<10, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case 11: agp_compute_pose_fixedn<11, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case 12: agp_compute_pose_fixedn<12, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case 13: agp_compute_pose_fixedn<13, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case 14: agp_compute_pose_fixedn<14, true, true>(q, out_x, out_y, out_a, px, py); return;
-				case 15: agp_compute_pose_fixedn<15, true, true>(q, out_x, out_y, out_a, px, py); return;
-				default: agp_compute_pose_fixedn<16, true, true>(q, out_x, out_y, out_a, px, py); return;
+				case  1: agp_compute_pose_fixedn< 1, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  2: agp_compute_pose_fixedn< 2, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  3: agp_compute_pose_fixedn< 3, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  4: agp_compute_pose_fixedn< 4, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  5: agp_compute_pose_fixedn< 5, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  6: agp_compute_pose_fixedn< 6, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  7: agp_compute_pose_fixedn< 7, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  8: agp_compute_pose_fixedn< 8, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  9: agp_compute_pose_fixedn< 9, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 10: agp_compute_pose_fixedn<10, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 11: agp_compute_pose_fixedn<11, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 12: agp_compute_pose_fixedn<12, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 13: agp_compute_pose_fixedn<13, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 14: agp_compute_pose_fixedn<14, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 15: agp_compute_pose_fixedn<15, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				default: agp_compute_pose_fixedn<16, true, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
 				}
 			}
 			else
 			{
 				switch (n)
 				{
-				case  1: agp_compute_pose_fixedn< 1, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  2: agp_compute_pose_fixedn< 2, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  3: agp_compute_pose_fixedn< 3, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  4: agp_compute_pose_fixedn< 4, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  5: agp_compute_pose_fixedn< 5, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  6: agp_compute_pose_fixedn< 6, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  7: agp_compute_pose_fixedn< 7, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  8: agp_compute_pose_fixedn< 8, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case  9: agp_compute_pose_fixedn< 9, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case 10: agp_compute_pose_fixedn<10, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case 11: agp_compute_pose_fixedn<11, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case 12: agp_compute_pose_fixedn<12, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case 13: agp_compute_pose_fixedn<13, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case 14: agp_compute_pose_fixedn<14, true, false>(q, out_x, out_y, out_a, px, py); return;
-				case 15: agp_compute_pose_fixedn<15, true, false>(q, out_x, out_y, out_a, px, py); return;
-				default: agp_compute_pose_fixedn<16, true, false>(q, out_x, out_y, out_a, px, py); return;
+				case  1: agp_compute_pose_fixedn< 1, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  2: agp_compute_pose_fixedn< 2, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  3: agp_compute_pose_fixedn< 3, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  4: agp_compute_pose_fixedn< 4, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  5: agp_compute_pose_fixedn< 5, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  6: agp_compute_pose_fixedn< 6, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  7: agp_compute_pose_fixedn< 7, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  8: agp_compute_pose_fixedn< 8, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  9: agp_compute_pose_fixedn< 9, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 10: agp_compute_pose_fixedn<10, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 11: agp_compute_pose_fixedn<11, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 12: agp_compute_pose_fixedn<12, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 13: agp_compute_pose_fixedn<13, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 14: agp_compute_pose_fixedn<14, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 15: agp_compute_pose_fixedn<15, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				default: agp_compute_pose_fixedn<16, true, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
 				}
 			}
 		}
@@ -2200,51 +2138,49 @@ __declspec(align(32)) struct ManipCost final
 			{
 				switch (n)
 				{
-				case  1: agp_compute_pose_fixedn< 1, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  2: agp_compute_pose_fixedn< 2, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  3: agp_compute_pose_fixedn< 3, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  4: agp_compute_pose_fixedn< 4, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  5: agp_compute_pose_fixedn< 5, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  6: agp_compute_pose_fixedn< 6, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  7: agp_compute_pose_fixedn< 7, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  8: agp_compute_pose_fixedn< 8, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case  9: agp_compute_pose_fixedn< 9, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case 10: agp_compute_pose_fixedn<10, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case 11: agp_compute_pose_fixedn<11, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case 12: agp_compute_pose_fixedn<12, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case 13: agp_compute_pose_fixedn<13, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case 14: agp_compute_pose_fixedn<14, false, true>(q, out_x, out_y, out_a, px, py); return;
-				case 15: agp_compute_pose_fixedn<15, false, true>(q, out_x, out_y, out_a, px, py); return;
-				default: agp_compute_pose_fixedn<16, false, true>(q, out_x, out_y, out_a, px, py); return;
+				case  1: agp_compute_pose_fixedn< 1, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  2: agp_compute_pose_fixedn< 2, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  3: agp_compute_pose_fixedn< 3, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  4: agp_compute_pose_fixedn< 4, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  5: agp_compute_pose_fixedn< 5, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  6: agp_compute_pose_fixedn< 6, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  7: agp_compute_pose_fixedn< 7, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  8: agp_compute_pose_fixedn< 8, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  9: agp_compute_pose_fixedn< 9, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 10: agp_compute_pose_fixedn<10, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 11: agp_compute_pose_fixedn<11, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 12: agp_compute_pose_fixedn<12, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 13: agp_compute_pose_fixedn<13, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 14: agp_compute_pose_fixedn<14, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 15: agp_compute_pose_fixedn<15, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				default: agp_compute_pose_fixedn<16, false, true>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
 				}
 			}
 			else
 			{
 				switch (n)
 				{
-				case  1: agp_compute_pose_fixedn< 1, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  2: agp_compute_pose_fixedn< 2, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  3: agp_compute_pose_fixedn< 3, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  4: agp_compute_pose_fixedn< 4, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  5: agp_compute_pose_fixedn< 5, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  6: agp_compute_pose_fixedn< 6, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  7: agp_compute_pose_fixedn< 7, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  8: agp_compute_pose_fixedn< 8, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case  9: agp_compute_pose_fixedn< 9, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case 10: agp_compute_pose_fixedn<10, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case 11: agp_compute_pose_fixedn<11, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case 12: agp_compute_pose_fixedn<12, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case 13: agp_compute_pose_fixedn<13, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case 14: agp_compute_pose_fixedn<14, false, false>(q, out_x, out_y, out_a, px, py); return;
-				case 15: agp_compute_pose_fixedn<15, false, false>(q, out_x, out_y, out_a, px, py); return;
-				default: agp_compute_pose_fixedn<16, false, false>(q, out_x, out_y, out_a, px, py); return;
+				case  1: agp_compute_pose_fixedn< 1, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  2: agp_compute_pose_fixedn< 2, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  3: agp_compute_pose_fixedn< 3, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  4: agp_compute_pose_fixedn< 4, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  5: agp_compute_pose_fixedn< 5, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  6: agp_compute_pose_fixedn< 6, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  7: agp_compute_pose_fixedn< 7, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  8: agp_compute_pose_fixedn< 8, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case  9: agp_compute_pose_fixedn< 9, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 10: agp_compute_pose_fixedn<10, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 11: agp_compute_pose_fixedn<11, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 12: agp_compute_pose_fixedn<12, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 13: agp_compute_pose_fixedn<13, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 14: agp_compute_pose_fixedn<14, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				case 15: agp_compute_pose_fixedn<15, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
+				default: agp_compute_pose_fixedn<16, false, false>(q, out_x, out_y, out_a, px, py, sin_out, cos_out); return;
 				}
 			}
 		}
 
 		__declspec(align(32)) float phi[AGP_MAX_FULL_DIM];
-		__declspec(align(32)) float s_arr[AGP_MAX_FULL_DIM];
-		__declspec(align(32)) float c_arr[AGP_MAX_FULL_DIM];
 
 		const float* __restrict th = q;
 		float phi_acc = 0.0f;
@@ -2278,146 +2214,293 @@ __declspec(align(32)) struct ManipCost final
 				++i;
 			}
 
-		FABE13_SINCOS(phi, s_arr, c_arr, n);
-
-		if (!store)
+		if (static_cast<bool>(sin_out))
 		{
-			int j = 0;
-			__m256 vx = _mm256_setzero_ps();
-			__m256 vy = _mm256_setzero_ps();
+			FABE13_SINCOS(phi, sin_out, cos_out, n);
+
+			if (!store)
+			{
+				int j = 0;
+				__m256 vx = _mm256_setzero_ps();
+				__m256 vy = _mm256_setzero_ps();
+
+				if (variableLen)
+				{
+					__pragma(loop(ivdep))
+						while (j + 8 <= n)
+						{
+							const __m256 vL = _mm256_load_ps(q + n + j);
+							const __m256 vc = _mm256_load_ps(cos_out + j);
+							const __m256 vs = _mm256_load_ps(sin_out + j);
+							vx = _mm256_fmadd_ps(vL, vc, vx);
+							vy = _mm256_fmadd_ps(vL, vs, vy);
+							j += 8;
+						}
+
+					float x = hsum256_ps(vx);
+					float y = hsum256_ps(vy);
+
+					__pragma(loop(ivdep))
+						while (j < n)
+						{
+							const float Li = q[n + j];
+							x = fmaf(Li, cos_out[j], x);
+							y = fmaf(Li, sin_out[j], y);
+							++j;
+						}
+
+					out_x = x;
+					out_y = y;
+					out_a = phi_acc;
+					return;
+				}
+				else
+				{
+					__declspec(align(32)) const __m256 vL = _mm256_set1_ps(fixedLength);
+					__pragma(loop(ivdep))
+						while (j + 8 <= n)
+						{
+							const __m256 vc = _mm256_load_ps(cos_out + j);
+							const __m256 vs = _mm256_load_ps(sin_out + j);
+							vx = _mm256_fmadd_ps(vL, vc, vx);
+							vy = _mm256_fmadd_ps(vL, vs, vy);
+							j += 8;
+						}
+
+					float x = hsum256_ps(vx);
+					float y = hsum256_ps(vy);
+
+					__pragma(loop(ivdep))
+						while (j < n)
+						{
+							x = fmaf(fixedLength, cos_out[j], x);
+							y = fmaf(fixedLength, sin_out[j], y);
+							++j;
+						}
+
+					out_x = x;
+					out_y = y;
+					out_a = phi_acc;
+					return;
+				}
+			}
+
+			float x = 0.0f, y = 0.0f;
+			i = 0;
 
 			if (variableLen)
 			{
 				__pragma(loop(ivdep))
-					while (j + 8 <= n)
+					while (i + 4 <= n)
 					{
-						const __m256 vL = _mm256_load_ps(q + n + j);
-						const __m256 vc = _mm256_load_ps(c_arr + j);
-						const __m256 vs = _mm256_load_ps(s_arr + j);
-						vx = _mm256_fmadd_ps(vL, vc, vx);
-						vy = _mm256_fmadd_ps(vL, vs, vy);
-						j += 8;
+						{
+							const float L0 = q[n + i + 0];
+							x = fmaf(L0, cos_out[i + 0], x);
+							y = fmaf(L0, sin_out[i + 0], y);
+							px[i + 1] = x; py[i + 1] = y;
+						}
+						{
+							const float L1 = q[n + i + 1];
+							x = fmaf(L1, cos_out[i + 1], x);
+							y = fmaf(L1, sin_out[i + 1], y);
+							px[i + 2] = x; py[i + 2] = y;
+						}
+						{
+							const float L2 = q[n + i + 2];
+							x = fmaf(L2, cos_out[i + 2], x);
+							y = fmaf(L2, sin_out[i + 2], y);
+							px[i + 3] = x; py[i + 3] = y;
+						}
+						{
+							const float L3 = q[n + i + 3];
+							x = fmaf(L3, cos_out[i + 3], x);
+							y = fmaf(L3, sin_out[i + 3], y);
+							px[i + 4] = x; py[i + 4] = y;
+						}
+						i += 4;
 					}
-
-				float x = hsum256_ps(vx);
-				float y = hsum256_ps(vy);
-
 				__pragma(loop(ivdep))
-					while (j < n)
+					while (i < n)
 					{
-						const float Li = q[n + j];
-						x = fmaf(Li, c_arr[j], x);
-						y = fmaf(Li, s_arr[j], y);
-						++j;
+						const float Li = q[n + i];
+						x = fmaf(Li, cos_out[i], x);
+						y = fmaf(Li, sin_out[i], y);
+						px[i + 1] = x;
+						py[i + 1] = y;
+						++i;
 					}
-
-				out_x = x;
-				out_y = y;
-				out_a = phi_acc;
-				return;
 			}
 			else
 			{
-				__declspec(align(32)) const __m256 vL = _mm256_set1_ps(fixedLength);
+				const float L = fixedLength;
 				__pragma(loop(ivdep))
-					while (j + 8 <= n)
+					while (i + 4 <= n)
 					{
-						const __m256 vc = _mm256_load_ps(c_arr + j);
-						const __m256 vs = _mm256_load_ps(s_arr + j);
-						vx = _mm256_fmadd_ps(vL, vc, vx);
-						vy = _mm256_fmadd_ps(vL, vs, vy);
-						j += 8;
+						x = fmaf(L, cos_out[i + 0], x); y = fmaf(L, sin_out[i + 0], y); px[i + 1] = x; py[i + 1] = y;
+						x = fmaf(L, cos_out[i + 1], x); y = fmaf(L, sin_out[i + 1], y); px[i + 2] = x; py[i + 2] = y;
+						x = fmaf(L, cos_out[i + 2], x); y = fmaf(L, sin_out[i + 2], y); px[i + 3] = x; py[i + 3] = y;
+						x = fmaf(L, cos_out[i + 3], x); y = fmaf(L, sin_out[i + 3], y); px[i + 4] = x; py[i + 4] = y;
+						i += 4;
 					}
-
-				float x = hsum256_ps(vx);
-				float y = hsum256_ps(vy);
-
 				__pragma(loop(ivdep))
-					while (j < n)
+					while (i < n)
 					{
-						x = fmaf(fixedLength, c_arr[j], x);
-						y = fmaf(fixedLength, s_arr[j], y);
-						++j;
+						x = fmaf(L, cos_out[i], x);
+						y = fmaf(L, sin_out[i], y);
+						px[i + 1] = x;
+						py[i + 1] = y;
+						++i;
 					}
-
-				out_x = x;
-				out_y = y;
-				out_a = phi_acc;
-				return;
 			}
-		}
 
-		float x = 0.0f, y = 0.0f;
-		i = 0;
-
-		if (variableLen)
-		{
-			__pragma(loop(ivdep))
-				while (i + 4 <= n)
-				{
-					{
-						const float L0 = q[n + i + 0];
-						x = fmaf(L0, c_arr[i + 0], x);
-						y = fmaf(L0, s_arr[i + 0], y);
-						px[i + 1] = x; py[i + 1] = y;
-					}
-					{
-						const float L1 = q[n + i + 1];
-						x = fmaf(L1, c_arr[i + 1], x);
-						y = fmaf(L1, s_arr[i + 1], y);
-						px[i + 2] = x; py[i + 2] = y;
-					}
-					{
-						const float L2 = q[n + i + 2];
-						x = fmaf(L2, c_arr[i + 2], x);
-						y = fmaf(L2, s_arr[i + 2], y);
-						px[i + 3] = x; py[i + 3] = y;
-					}
-					{
-						const float L3 = q[n + i + 3];
-						x = fmaf(L3, c_arr[i + 3], x);
-						y = fmaf(L3, s_arr[i + 3], y);
-						px[i + 4] = x; py[i + 4] = y;
-					}
-					i += 4;
-				}
-			__pragma(loop(ivdep))
-				while (i < n)
-				{
-					const float Li = q[n + i];
-					x = fmaf(Li, c_arr[i], x);
-					y = fmaf(Li, s_arr[i], y);
-					px[i + 1] = x;
-					py[i + 1] = y;
-					++i;
-				}
+			out_x = x;
+			out_y = y;
+			out_a = phi_acc;
 		}
 		else
 		{
-			const float L = fixedLength;
-			__pragma(loop(ivdep))
-				while (i + 4 <= n)
-				{
-					x = fmaf(L, c_arr[i + 0], x); y = fmaf(L, s_arr[i + 0], y); px[i + 1] = x; py[i + 1] = y;
-					x = fmaf(L, c_arr[i + 1], x); y = fmaf(L, s_arr[i + 1], y); px[i + 2] = x; py[i + 2] = y;
-					x = fmaf(L, c_arr[i + 2], x); y = fmaf(L, s_arr[i + 2], y); px[i + 3] = x; py[i + 3] = y;
-					x = fmaf(L, c_arr[i + 3], x); y = fmaf(L, s_arr[i + 3], y); px[i + 4] = x; py[i + 4] = y;
-					i += 4;
-				}
-			__pragma(loop(ivdep))
-				while (i < n)
-				{
-					x = fmaf(L, c_arr[i], x);
-					y = fmaf(L, s_arr[i], y);
-					px[i + 1] = x;
-					py[i + 1] = y;
-					++i;
-				}
-		}
+			__declspec(align(32)) float s_arr[AGP_MAX_FULL_DIM], c_arr[AGP_MAX_FULL_DIM];
+			FABE13_SINCOS(phi, s_arr, c_arr, n);
 
-		out_x = x;
-		out_y = y;
-		out_a = phi_acc;
+			if (!store)
+			{
+				int j = 0;
+				__m256 vx = _mm256_setzero_ps();
+				__m256 vy = _mm256_setzero_ps();
+
+				if (variableLen)
+				{
+					__pragma(loop(ivdep))
+						while (j + 8 <= n)
+						{
+							const __m256 vL = _mm256_load_ps(q + n + j);
+							const __m256 vc = _mm256_load_ps(c_arr + j);
+							const __m256 vs = _mm256_load_ps(s_arr + j);
+							vx = _mm256_fmadd_ps(vL, vc, vx);
+							vy = _mm256_fmadd_ps(vL, vs, vy);
+							j += 8;
+						}
+
+					float x = hsum256_ps(vx);
+					float y = hsum256_ps(vy);
+
+					__pragma(loop(ivdep))
+						while (j < n)
+						{
+							const float Li = q[n + j];
+							x = fmaf(Li, c_arr[j], x);
+							y = fmaf(Li, s_arr[j], y);
+							++j;
+						}
+
+					out_x = x;
+					out_y = y;
+					out_a = phi_acc;
+					return;
+				}
+				else
+				{
+					__declspec(align(32)) const __m256 vL = _mm256_set1_ps(fixedLength);
+					__pragma(loop(ivdep))
+						while (j + 8 <= n)
+						{
+							const __m256 vc = _mm256_load_ps(c_arr + j);
+							const __m256 vs = _mm256_load_ps(s_arr + j);
+							vx = _mm256_fmadd_ps(vL, vc, vx);
+							vy = _mm256_fmadd_ps(vL, vs, vy);
+							j += 8;
+						}
+
+					float x = hsum256_ps(vx);
+					float y = hsum256_ps(vy);
+
+					__pragma(loop(ivdep))
+						while (j < n)
+						{
+							x = fmaf(fixedLength, c_arr[j], x);
+							y = fmaf(fixedLength, s_arr[j], y);
+							++j;
+						}
+
+					out_x = x;
+					out_y = y;
+					out_a = phi_acc;
+					return;
+				}
+			}
+
+			float x = 0.0f, y = 0.0f;
+			i = 0;
+
+			if (variableLen)
+			{
+				__pragma(loop(ivdep))
+					while (i + 4 <= n)
+					{
+						{
+							const float L0 = q[n + i + 0];
+							x = fmaf(L0, c_arr[i + 0], x);
+							y = fmaf(L0, s_arr[i + 0], y);
+							px[i + 1] = x; py[i + 1] = y;
+						}
+						{
+							const float L1 = q[n + i + 1];
+							x = fmaf(L1, c_arr[i + 1], x);
+							y = fmaf(L1, s_arr[i + 1], y);
+							px[i + 2] = x; py[i + 2] = y;
+						}
+						{
+							const float L2 = q[n + i + 2];
+							x = fmaf(L2, c_arr[i + 2], x);
+							y = fmaf(L2, s_arr[i + 2], y);
+							px[i + 3] = x; py[i + 3] = y;
+						}
+						{
+							const float L3 = q[n + i + 3];
+							x = fmaf(L3, c_arr[i + 3], x);
+							y = fmaf(L3, s_arr[i + 3], y);
+							px[i + 4] = x; py[i + 4] = y;
+						}
+						i += 4;
+					}
+				__pragma(loop(ivdep))
+					while (i < n)
+					{
+						const float Li = q[n + i];
+						x = fmaf(Li, c_arr[i], x);
+						y = fmaf(Li, s_arr[i], y);
+						px[i + 1] = x;
+						py[i + 1] = y;
+						++i;
+					}
+			}
+			else
+			{
+				const float L = fixedLength;
+				__pragma(loop(ivdep))
+					while (i + 4 <= n)
+					{
+						x = fmaf(L, c_arr[i + 0], x); y = fmaf(L, s_arr[i + 0], y); px[i + 1] = x; py[i + 1] = y;
+						x = fmaf(L, c_arr[i + 1], x); y = fmaf(L, s_arr[i + 1], y); px[i + 2] = x; py[i + 2] = y;
+						x = fmaf(L, c_arr[i + 2], x); y = fmaf(L, s_arr[i + 2], y); px[i + 3] = x; py[i + 3] = y;
+						x = fmaf(L, c_arr[i + 3], x); y = fmaf(L, s_arr[i + 3], y); px[i + 4] = x; py[i + 4] = y;
+						i += 4;
+					}
+				__pragma(loop(ivdep))
+					while (i < n)
+					{
+						x = fmaf(L, c_arr[i], x);
+						y = fmaf(L, s_arr[i], y);
+						px[i + 1] = x;
+						py[i + 1] = y;
+						++i;
+					}
+			}
+
+			out_x = x;
+			out_y = y;
+			out_a = phi_acc;
+		}
 	}
 
 	__declspec(noalias) __forceinline void copy_state_full_dim(
@@ -2663,7 +2746,7 @@ __declspec(align(32)) struct ManipCost final
 	__forceinline void SetTransitionReference(const float* src) noexcept
 	{
 		cached_start_valid = false;
-		const int total = n << 1;
+		const int total = n + (variableLen ? n : 0);
 		int i = 0;
 		__pragma(loop(ivdep))
 			while (i < total)
@@ -2887,7 +2970,7 @@ __declspec(align(32)) struct ManipCost final
 	template<bool HasObstacles, bool VariableLen>
 	__declspec(noalias) __forceinline bool evaluate_state_without_transition_continuity(
 		const float* __restrict q, float& out_x, float& out_y, float& out_a,
-		unsigned& out_index, float& out_value, float* out_geom_clearance) const noexcept
+		unsigned& out_index, float& out_value, float* out_geom_clearance, float* __restrict sin_out = nullptr, float* __restrict cos_out = nullptr) const noexcept
 	{
 		unsigned base_idx = 0u;
 		if (!evaluate_joint_angle_limits_only(q, base_idx, out_index, out_value))
@@ -2900,7 +2983,7 @@ __declspec(align(32)) struct ManipCost final
 			base_idx += static_cast<unsigned>(n);
 		}
 		__declspec(align(32)) float px[AGP_MAX_LINK_POINTS], py[AGP_MAX_LINK_POINTS];
-		compute_pose(q, out_x, out_y, out_a, px, py);
+		compute_pose(q, out_x, out_y, out_a, px, py, sin_out, cos_out);
 		if constexpr (HasObstacles)
 		{
 			if (!evaluate_pose_constraints_from_arrays(px, py, base_idx, out_index, out_value, out_geom_clearance))
@@ -3169,10 +3252,12 @@ __declspec(align(32)) struct ManipCost final
 	template<bool HasObstacles, bool VariableLen, bool IsTransition>
 	__declspec(noalias) __forceinline bool evaluate_indexed(
 		const float* __restrict q, float& out_x, float& out_y, float& out_a,
-		unsigned& out_index, float& out_value) const noexcept
+		unsigned& out_index, float& out_value,
+		float* __restrict sin_eval, float* __restrict cos_eval) const noexcept
 	{
 		float clearance;
-		if (!evaluate_state_without_transition_continuity<HasObstacles, VariableLen>(q, out_x, out_y, out_a, out_index, out_value, &clearance))
+		if (!evaluate_state_without_transition_continuity<HasObstacles, VariableLen>(q, out_x, out_y, out_a, out_index, out_value, &clearance,
+			sin_eval, cos_eval))
 			return false;
 		if constexpr (HasObstacles && IsTransition)
 			return evaluate_transition_swept_motion_indexed<HasObstacles, VariableLen>(q, out_x, out_y, out_a, clearance, out_index, out_value, nullptr);
@@ -3197,45 +3282,19 @@ static __declspec(noalias) __forceinline unsigned agp_splitmix32(unsigned x) noe
 	return x ^ (x >> 16);
 }
 
-static __declspec(noalias) __forceinline float agp_radical_inverse_scrambled(unsigned long long index, unsigned base, unsigned scramble) noexcept
-{
-	unsigned long long base64 = static_cast<unsigned long long>(base);
-	float inv_base = 1.0f / static_cast<float>(base), inv_pow = inv_base, value;
-	unsigned state = scramble % base;
-	while (index)
-	{
-		unsigned digit = static_cast<unsigned>(index % base64), perm = (digit + state) % base;
-		value = fmaf(static_cast<float>(perm), inv_pow, value);
-		inv_pow *= inv_base;
-		index /= base64;
-		state = (state * 1664525u + 1013904223u) % base;
-	}
-	return value;
-}
-
 static __declspec(noalias) __forceinline void agp_write_seed_point(
-	int row, int stride, int sobol_dims, int dim,
+	int row, int stride, int dim,
 	const unsigned* __restrict cur_x,
-	const unsigned* __restrict scramble_mask,
 	const float* __restrict low_cache,
 	const float* __restrict span_cache,
-	float* __restrict S, unsigned long long index,
-	const unsigned* __restrict halton_primes) noexcept
+	float* __restrict S) noexcept
 {
 	float* __restrict row_ptr = S + static_cast<size_t>(row) * static_cast<size_t>(stride);
 	int dd = 0;
 	__pragma(loop(ivdep))
-		while (dd < sobol_dims)
-		{
-			float u = static_cast<float>(cur_x[dd]) * 2.3283064e-10f;
-			row_ptr[dd] = fmaf(u, span_cache[dd], low_cache[dd]);
-			++dd;
-		}
-	__pragma(loop(ivdep))
 		while (dd < dim)
 		{
-			unsigned base = halton_primes[(dd - AGP_MAX_FULL_DIM) & 15];
-			float u = agp_radical_inverse_scrambled(index, base, scramble_mask[dd]);
+			const float u = static_cast<float>(static_cast<double>(cur_x[dd]) * 2.3283064365386962890625e-10);
 			row_ptr[dd] = fmaf(u, span_cache[dd], low_cache[dd]);
 			++dd;
 		}
@@ -3250,11 +3309,29 @@ static __declspec(noalias) __forceinline void agp_write_seed_point(
 static __declspec(noalias) __forceinline int generate_sobol_seeds(
 	const MortonND& map, int dim_, float* __restrict S, int stride, unsigned seed, int max_points) noexcept
 {
-	int dim = dim_;
-	int temp_dim = dim - 1;
-	int ns_orig = static_cast<int>(fmaf(static_cast<float>(temp_dim), fmaf(static_cast<float>(temp_dim), fmaf(static_cast<float>(temp_dim), fmaf(static_cast<float>(temp_dim), 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f));
-	int ns_pow2 = 1;
-	while (ns_pow2 < ns_orig) ns_pow2 <<= 1;
+	const int dim = dim_;
+
+	static constexpr int AGP_SOBOL_SEED_COUNT[AGP_MAX_FULL_DIM + 1] = {
+			0,
+			4,
+			8,
+			8,
+			16,
+			16,
+			64,
+			64,
+			128,
+			128,
+			256,
+			256,
+			512,
+			512,
+			1024,
+			1024,
+			2048
+	};
+
+	int ns_pow2 = AGP_SOBOL_SEED_COUNT[dim];
 	if (ns_pow2 > max_points) ns_pow2 = max_points;
 
 	static const unsigned int sobol_dir[AGP_MAX_FULL_DIM][32] =
@@ -3293,12 +3370,6 @@ static __declspec(noalias) __forceinline int generate_sobol_seeds(
 							45u, 45u, 51u, 51u, 57u, 57u, 63u, 63u, 69u, 69u, 75u, 75u, 81u, 81u, 87u, 87u }
 	};
 
-	static const unsigned int halton_primes[AGP_MAX_FULL_DIM] =
-	{
-			131u, 137u, 139u, 149u, 151u, 157u, 163u, 167u,
-			173u, 179u, 181u, 191u, 193u, 197u, 199u, 211u
-	};
-
 	__declspec(align(32)) unsigned scramble_mask[AGP_MAX_FULL_DIM];
 	__declspec(align(32)) float low_cache[AGP_MAX_FULL_DIM], span_cache[AGP_MAX_FULL_DIM];
 	int d = 0;
@@ -3313,47 +3384,36 @@ static __declspec(noalias) __forceinline int generate_sobol_seeds(
 	__pragma(loop(ivdep))
 		while (d < dim)
 		{
-			int pd = map.perm[d];
-			float lo = map.low[pd];
+			const float lo = map.low[d];
 			low_cache[d] = lo;
-			span_cache[d] = fmaf(map.high[pd], 1.0f, -lo);
+			span_cache[d] = map.high[d] - lo;
 			++d;
 		}
-	unsigned long long start_idx = 1ull;
 	__declspec(align(32)) unsigned cur_x[AGP_MAX_FULL_DIM];
 	d = 0;
-	while (d < dim)
-	{
-		unsigned x = 0u;
-		unsigned long long ii = start_idx;
-		int b = 0;
-		__pragma(loop(ivdep))
-			while (ii && b < 32)
-			{
-				if (ii & 1ull) x ^= sobol_dir[d][b];
-				ii >>= 1ull;
-				++b;
-			}
-		cur_x[d] = x ^ scramble_mask[d];
-		++d;
-	}
-	agp_write_seed_point(0, stride, dim, dim, cur_x, scramble_mask, low_cache, span_cache, S, start_idx, halton_primes);
-	unsigned long long prev_gray = start_idx ^ (start_idx >> 1ull);
+	__pragma(loop(ivdep))
+		while (d < dim)
+		{
+			cur_x[d] = scramble_mask[d];
+			++d;
+		}
+	agp_write_seed_point(0, stride, dim, cur_x, low_cache, span_cache, S);
+	unsigned long long prev_gray = 0ull;
 	int j = 1;
 	while (j < ns_pow2)
 	{
-		unsigned long long i = start_idx + static_cast<unsigned long long>(j);
+		unsigned long long i = static_cast<unsigned long long>(j);
 		unsigned long long gray = i ^ (i >> 1ull);
 		unsigned long long diff = gray ^ prev_gray;
 		int bit = _tzcnt_u64(diff);
 		d = 0;
 		while (d < dim)
 		{
-			cur_x[d] ^= sobol_dir[d][bit];
+			cur_x[d] ^= sobol_dir[d][bit] << (31 - bit);
 			++d;
 		}
 		prev_gray = gray;
-		agp_write_seed_point(j, stride, dim, dim, cur_x, scramble_mask, low_cache, span_cache, S, i, halton_primes);
+		agp_write_seed_point(j, stride, dim, cur_x, low_cache, span_cache, S);
 		++j;
 	}
 	return ns_pow2;
@@ -3516,7 +3576,7 @@ static __declspec(noalias) __forceinline int generate_heuristic_seeds(
 	if (use_ik && prefer_extended && total_seeds < AGP_MAX_GENERATED_SEEDS)
 	{
 		__declspec(align(32)) float q3[AGP_MAX_FULL_DIM];
-		float angles[AGP_MAX_FULL_DIM], lengths[AGP_MAX_FULL_DIM];
+		__declspec(align(32)) float angles[AGP_MAX_FULL_DIM] = { 0.0f }, lengths[AGP_MAX_FULL_DIM];
 		if (VL)
 		{
 			const float avg_len = fmaf(map.low[n], 0.5f, fmaf(map.high[n], 0.5f, 0.0f));
@@ -3694,7 +3754,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	__pragma(loop(ivdep))
 		for (int i = 0; i < 12; ++i) M_by_span[i] = M_prior;
 	float Mmax = M_prior;
-	__declspec(align(32)) float phi[AGP_MAX_FULL_DIM], s_arr[AGP_MAX_FULL_DIM], c_arr[AGP_MAX_FULL_DIM];
 	__declspec(align(32)) float sum_s[AGP_MAX_FULL_DIM], sum_c[AGP_MAX_FULL_DIM], q_try[AGP_MAX_FULL_DIM];
 
 	float bestIndexValue = FLT_MAX, bestIndexedX = 0.0f, bestIndexedY = 0.0f, bestIndexedA = 0.0f;
@@ -3703,34 +3762,35 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	InitBestSolutionMsg(lastSentBestMsg);
 	int no_improve = 0;
 
-	const float a = 0.0f, b = 1.0f;
+	const float a = 0.0f, b = 0.999999940395355224609375f;
 	float p = 0.0f, dmax = b - a, initial_len = dmax;
 
-	const float A_dim = fmaf(1.0f / sqrtf(dim_f + 6.75f), 5.535f, 0.0f);
-	const float A_dim__ = fmaf(1.0f / sqrtf(dim_f + 6.75f), 3.425f, 0.0f);
-	const float B_dim = fmaf(A_dim, 0.7f, 0.0f);
-	const float B_dim__ = fmaf(A_dim__, 4.325f, 0.0f);
+	const float A_inv_sqrt = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dim_f + 6.75f)));
+	const float A_dim = A_inv_sqrt * 5.535f;
+	const float A_dim__ = A_inv_sqrt * 3.425f;
+	const float B_dim = A_dim * 0.7f;
+	const float B_dim__ = A_dim__ * 4.325f;
 	const float log_argument = A_dim - 2.03f;
 	const float log_argument__ = A_dim__ - 2.0f;
 	const float C_dim = fmaf(log_argument, fmaf(log_argument, fmaf(log_argument, fmaf(log_argument, fmaf(log_argument, 0.164056f, -0.098462f), 0.240884f), -0.351834f), 0.999996f), log_argument) - B_dim;
 	const float C_dim__ = fmaf(log_argument__, fmaf(log_argument__, fmaf(log_argument__, fmaf(log_argument__, fmaf(log_argument__, 0.164056f, -0.098462f), 0.240884f), -0.351834f), 0.999996f), log_argument__) - B_dim__;
 	const float adaptive_coeff_addition = fmaf(C_dim, fmaf(C_dim, fmaf(C_dim, fmaf(C_dim, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
 	const float adaptive_coeff_addition__ = fmaf(C_dim__, fmaf(C_dim__, fmaf(C_dim__, fmaf(C_dim__, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f);
-	const float stop_len = (dim > 1) ? agp_pow_u32(eps, static_cast<unsigned>(dim)) : eps;
-	const float sqrt_dim_minus_1 = sqrtf(dim_f - 1.0f);
 	const float stagnation_seed_interval = 0.00031f * dim_f;
 	const float sqrt_dim = sqrtf(dim_f);
-	const float first_sqrt = sqrtf(fmaf(1.0f / dim_f, 2.0f, 0.0f));
-	const float second_sqrt = sqrtf(fmaf(1.0f / (dim_f + 7.0f), 5.0f, 0.0f));
-	const float third_sqrt = sqrtf(fmaf(1.0f / (dim_f + 7.0f), 9.0f, 0.0f));
-	const float fourth_sqrt = sqrtf(fmaf(1.0f / (dim_f + 7.0f), 6.5f, 0.0f));
+	const float sqrt_dim_minus_1 = sqrtf(dim_f - 1.0f);
+	const float first_sqrt = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dim_f))) * 1.41421356237f;
+	const float inv_sqrt = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dim_f + 7.0f)));
+	const float second_sqrt = inv_sqrt * 2.23606797750f;
+	const float third_sqrt = inv_sqrt * 3.0f;
+	const float fourth_sqrt = inv_sqrt * 2.54950975680f;
 	float adaptive_coeff = A_dim - adaptive_coeff_addition;
 	float adaptive_coeff__ = A_dim__ - adaptive_coeff_addition__;
 
 	int it = 0, stag_boost_remaining = 0;
 	float stag_r_multiplier = 0.0f;
 	const int n_stag_iters = static_cast<int>(fmaf(sqrt_dim, 2.045f, 3.0f));
-	const int noImproveThrDim = static_cast<int>(fmaf(7.5f, exp2f(-0.1f * sqrt_dim), 0.0f));
+	const int noImproveThrDim = static_cast<int>(exp2f(-0.1f * sqrt_dim) * 7.5f);
 	const int num_ik_base = 1 + static_cast<int>(sqrt_dim);
 
 	const int rank = g_world->rank();
@@ -3851,19 +3911,22 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		[&cost](const float* q_eval,
 			float& x_eval, float& y_eval, float& a_eval,
 			unsigned& idx_eval, float& val_eval,
-			float* clearance_eval) noexcept -> bool
+			float* clearance_eval,
+			float* __restrict sin_eval, float* __restrict cos_eval) noexcept -> bool
 		{
 			if constexpr (HasObstacles && IsTransition)
 			{
 				if (!cost.evaluate_state_without_transition_continuity<true, VariableLen>(
-					q_eval, x_eval, y_eval, a_eval, idx_eval, val_eval, clearance_eval))
+					q_eval, x_eval, y_eval, a_eval, idx_eval, val_eval, clearance_eval,
+					sin_eval, cos_eval))
 					return false;
 				idx_eval = cost.total_constraints();
 				val_eval = cost.compute_transition_objective_from_pose(q_eval, x_eval, y_eval, a_eval);
 				return true;
 			}
 
-			return cost.evaluate_indexed<HasObstacles, VariableLen, IsTransition>(q_eval, x_eval, y_eval, a_eval, idx_eval, val_eval);
+			return cost.evaluate_indexed<HasObstacles, VariableLen, IsTransition>(q_eval, x_eval, y_eval, a_eval, idx_eval, val_eval,
+				sin_eval, cos_eval);
 		};
 
 	auto confirm_local_model_if_needed =
@@ -3986,80 +4049,156 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			}
 		};
 
-	const float refine_eta_init = 2.0f / sqrtf(dim_f);
+	const float refine_eta_init = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(dim_f))) * 2.0f;
+	float offset;
+	if (dim > 6)
+	{
+		const float ln_arg = fmaf(dim_f, 0.08103727715f, -1.0f);
+		offset = fmaf(ln_arg,
+			fmaf(ln_arg,
+				fmaf(ln_arg,
+					fmaf(ln_arg,
+						fmaf(ln_arg,
+							fmaf(ln_arg,
+								fmaf(ln_arg,
+									-0.02142857143f,
+									0.025f),
+								-0.03f),
+							0.0375f),
+						-0.05f),
+					0.075f),
+				-0.15f),
+			-0.965f);
+	}
+	else
+	{
+		const uint32_t bits = std::bit_cast<uint32_t>(dim_f * 0.08103727715f);
+		const float x_red = static_cast<float>(bits & 0x7FFFFF) * 0.00000011921f;
+		offset = fmaf(static_cast<float>(((bits >> 23) & 0xFF) - 127), -0.10397207708f,
+			fmaf(x_red,
+				fmaf(x_red,
+					fmaf(x_red,
+						fmaf(x_red,
+							fmaf(x_red,
+								fmaf(x_red,
+									fmaf(x_red, -0.02142857143f, 0.025f),
+									-0.03f),
+								0.0375f),
+							-0.05f),
+						0.075f),
+					-0.15f),
+				-0.965f));
+	}
+	const float offset_mult = offset + 1.0f;
 
-	auto refine_trial = [&](float* q_inout, float& x_io, float& y_io, float& a_io, unsigned& idx_io, float& f_io) noexcept -> bool
+	auto refine_trial = [&](float* q_inout, float& x_io, float& y_io, float& a_io, unsigned& idx_io, float& f_io,
+		float* __restrict sin_arr, float* __restrict cos_arr) noexcept -> bool
 		{
 			if (!(f_io < fmaf(bestF, adaptive_coeff, 0.0f))) return false;
-			float transition_alpha_cap_local = 1.0f;
 
 			__declspec(align(32)) float q_initial[AGP_MAX_FULL_DIM];
 			memcpy(q_initial, q_inout, static_cast<size_t>(dim) * sizeof(float));
 
-			const float f_start = f_io;
-			const float c1 = 1e-4f;
 			const float progress_multiplier = fmaf(p, 0.65f, 1.0f);
-			const int max_outer_iters = static_cast<int>(progress_multiplier * 50.0f);
+			const float lbfgs_trigger = fmaf(dim_f * dim_f, -0.002525f, fmaf(sqrtf(p), -0.45f, 0.575f));
+			const float weighted_len_scale = cost.transitionLengthEnergyWeight * cost.fixedLength * cost.fixedLength;
+			const int max_lm_iters = static_cast<int>(progress_multiplier * 65.0f);
+			const int max_lm_rejects = static_cast<int>(fmaf(progress_multiplier, -5.0f, 14.0f));
 			const int max_backtrack = static_cast<int>(progress_multiplier * 20.0f);
-			const float lbfgs_trigger = 0.6f;
-			const int m_lbfgs = 9;
-			const int max_lbfgs_iters = static_cast<int>(progress_multiplier * 25.0f);
-			const float eps_lbfgs_curv = 1e-6f;
-			float eta = refine_eta_init;
+			const int max_lbfgs_iters = static_cast<int>(progress_multiplier * 15.0f);
+			const float c1 = 1.0e-4f;
+			float transition_alpha_cap_local = 1.0f;
+			const float f_start = f_io;
 
-			auto computeGrad = [&n, &phi, &s_arr, &c_arr, &sum_s, &sum_c, &cost](const float* q_in, float x_in, float y_in, float* grad_out, float& grad_norm2_out) noexcept
+			float capture_w;
+			float reg_sum;
+			if constexpr (IsTransition)
+			{
+				capture_w = cost.transitionCaptureWeight;
+				reg_sum = static_cast<float>(n) * cost.transitionEnergyWeight;
+				if constexpr (VariableLen)
+					reg_sum = fmaf(static_cast<float>(n), cost.transitionLengthEnergyWeight, reg_sum);
+			}
+			else
+			{
+				capture_w = 1.0f;
+				reg_sum = 0.0f;
+			}
+
+			__declspec(align(32)) float jx[AGP_MAX_FULL_DIM];
+			__declspec(align(32)) float jy[AGP_MAX_FULL_DIM];
+			__declspec(align(32)) float ja[AGP_MAX_FULL_DIM];
+			__declspec(align(32)) float grad_half[AGP_MAX_FULL_DIM];
+			__declspec(align(32)) float reg_diag[AGP_MAX_FULL_DIM];
+			__declspec(align(32)) float inv_rdiag[AGP_MAX_FULL_DIM];
+			__declspec(align(32)) float dir_lm[AGP_MAX_FULL_DIM];
+
+			auto solve_sym3_ldlt = [](const float a00, const float a01, const float a02,
+				const float a11, const float a12, const float a22,
+				const float b0, const float b1, const float b2,
+				float& x0, float& x1, float& x2) noexcept
 				{
-					float phi_acc_local = 0.0f;
-					int ii = 0;
-					while (ii < n)
-					{
-						phi_acc_local += q_in[ii];
-						phi[ii] = phi_acc_local;
-						++ii;
-					}
+					const float inv_d0 = 1.0f / a00;
+					const float l10 = a01 * inv_d0;
+					const float l20 = a02 * inv_d0;
 
-					FABE13_SINCOS(phi, s_arr, c_arr, n);
+					const float d1 = fmaf(-l10, a01, a11);
+					const float inv_d1 = 1.0f / d1;
+					const float t12 = fmaf(-l20, a01, a12);
+					const float l21 = t12 * inv_d1;
 
+					const float d2 = fmaf(-l21, t12, fmaf(-l20, a02, a22));
+
+					const float y0 = b0;
+					const float y1 = fmaf(-l10, y0, b1);
+					const float y2 = fmaf(-l21, y1, fmaf(-l20, y0, b2));
+
+					const float z0 = y0 * inv_d0;
+					const float z1 = y1 * inv_d1;
+					const float z2 = y2 / d2;
+
+					x2 = z2;
+					x1 = fmaf(-l21, x2, z1);
+					x0 = fmaf(-l20, x2, fmaf(-l10, x1, z0));
+				};
+
+			auto build_jacobian = [&](const float* __restrict q,
+				const float* __restrict s_arr, const float* __restrict c_arr,
+				float& jj00, float& jj01, float& jj02,
+				float& jj11, float& jj12, float& jj22) noexcept
+				{
 					float acc_s = 0.0f;
 					float acc_c = 0.0f;
-					int kk = n - 1;
-					while (kk >= 0)
+					int k = n - 1;
+					while (k >= 0)
 					{
-						const float Lk = cost.link_length(q_in, kk);
-						acc_s = fmaf(Lk, s_arr[kk], acc_s);
-						acc_c = fmaf(Lk, c_arr[kk], acc_c);
-						sum_s[kk] = acc_s;
-						sum_c[kk] = acc_c;
-						--kk;
+						const float Lk = cost.link_length(q, k);
+						acc_s = fmaf(Lk, s_arr[k], acc_s);
+						acc_c = fmaf(Lk, c_arr[k], acc_c);
+						sum_s[k] = acc_s;
+						sum_c[k] = acc_c;
+						--k;
 					}
 
-					const float dx = x_in - cost.targetX;
-					const float dy = y_in - cost.targetY;
-
-					grad_norm2_out = 0.0f;
+					jj00 = 0.0f; jj01 = 0.0f; jj02 = 0.0f;
+					jj11 = 0.0f; jj12 = 0.0f; jj22 = 0.0f;
 
 					int i = 0;
 					__pragma(loop(ivdep))
 						while (i < n)
 						{
-							float gpen = 0.0f;
-							float g_main = 0.0f;
+							const float xj = -sum_s[i];
+							const float yj = sum_c[i];
+							jx[i] = xj;
+							jy[i] = yj;
+							ja[i] = 1.0f;
 
-							if constexpr (IsTransition)
-							{
-								const float dtheta = cost.wrap_pi(q_in[i] - cost.referenceState[i]);
-								gpen = fmaf(2.0f * cost.transitionEnergyWeight, dtheta, 0.0f);
-								const float inner = fmaf(dx, -sum_s[i], fmaf(dy, sum_c[i], 0.0f));
-								g_main = fmaf(2.0f * cost.transitionCaptureWeight, inner, 0.0f);
-							}
-							else
-							{
-								g_main = 2.0f * fmaf(-sum_s[i], dx, fmaf(sum_c[i], dy, 0.0f));
-							}
-
-							const float gi = fmaf(cost.wrap_pi(phi_acc_local - cost.targetAngle), 2.0f, g_main + gpen);
-							grad_out[i] = gi;
-							grad_norm2_out = fmaf(gi, gi, grad_norm2_out);
+							jj00 = fmaf(xj, xj, jj00);
+							jj01 = fmaf(xj, yj, jj01);
+							jj02 += xj;
+							jj11 = fmaf(yj, yj, jj11);
+							jj12 += yj;
+							jj22 += 1.0f;
 							++i;
 						}
 
@@ -4069,189 +4208,373 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						__pragma(loop(ivdep))
 							while (j < n)
 							{
-								float gi = 0.0f;
-								if constexpr (IsTransition)
-								{
-									const float gpenL = fmaf(2.0f * cost.transitionLengthEnergyWeight, fmaf(q_in[n + j], 1.0f, -cost.referenceState[n + j]), 0.0f);
-									const float innerL = fmaf(dx, c_arr[j], fmaf(dy, s_arr[j], 0.0f));
-									gi = fmaf(2.0f * cost.transitionCaptureWeight, innerL, gpenL);
-								}
-								else
-								{
-									const float tmp = fmaf(dx, c_arr[j], fmaf(dy, s_arr[j], 0.0f));
-									gi = 2.0f * tmp;
-								}
-								grad_out[n + j] = gi;
-								grad_norm2_out = fmaf(gi, gi, grad_norm2_out);
+								const int d = n + j;
+								const float xj = c_arr[j];
+								const float yj = s_arr[j];
+								jx[d] = xj;
+								jy[d] = yj;
+								ja[d] = 0.0f;
+
+								jj00 = fmaf(xj, xj, jj00);
+								jj01 = fmaf(xj, yj, jj01);
+								jj11 = fmaf(yj, yj, jj11);
 								++j;
 							}
 					}
 				};
 
-			auto armijoLineSearch =
-				[&](const float* q_base, float f_base, const float* dir, float gtd,
-					float& alpha_io, float* q_out, float& f_out,
-					float& x_out, float& y_out, float& a_out, unsigned& idx_out) noexcept -> bool
+			auto compute_full_grad = [&](const float* __restrict q, const float x, const float y, const float a,
+				const float* __restrict s_arr, const float* __restrict c_arr,
+				float* __restrict grad_out, float& grad_norm2_out) noexcept
+				{
+					float jj00, jj01, jj02, jj11, jj12, jj22;
+					build_jacobian(q, s_arr, c_arr, jj00, jj01, jj02, jj11, jj12, jj22);
+
+					const float ex = x - cost.targetX;
+					const float ey = y - cost.targetY;
+					const float ea = cost.wrap_pi(a - cost.targetAngle);
+
+					grad_norm2_out = 0.0f;
+					int d = 0;
+					__pragma(loop(ivdep))
+						while (d < dim)
+						{
+							float gh = capture_w * fmaf(jx[d], ex, fmaf(jy[d], ey, ja[d] * ea));
+							if constexpr (IsTransition)
+							{
+								if (d < n)
+								{
+									const float r = cost.wrap_pi(q[d] - cost.referenceState[d]);
+									gh = fmaf(cost.transitionEnergyWeight, r, gh);
+								}
+								else
+								{
+									const float r = q[d] - cost.referenceState[d];
+									gh = fmaf(cost.transitionLengthEnergyWeight, r, gh);
+								}
+							}
+							const float g = gh + gh;
+							grad_out[d] = g;
+							grad_norm2_out = fmaf(g, g, grad_norm2_out);
+							++d;
+						}
+				};
+
+			auto armijo_line_search = [&](const float* __restrict q_base, const float f_base,
+				const float* __restrict direction, const float gtd,
+				float& alpha_io, float& f_out, float& x_out, float& y_out, float& a_out, unsigned& idx_out,
+				float* __restrict sin_out, float* __restrict cos_out) noexcept -> bool
 				{
 					float alpha = alpha_io;
 					if constexpr (HasObstacles && IsTransition)
 						alpha = (std::min)(alpha, transition_alpha_cap_local);
 
-					int backtrack = 0;
+					int bt = 0;
 					int full_rejects = 0;
-
-					while (backtrack < max_backtrack)
+					while (bt < max_backtrack)
 					{
-						agp_axpy_clamp_avx2(q_base, dir, alpha, q_lo, q_hi, q_out, dim);
+						agp_axpy_clamp_avx2(q_base, direction, alpha, q_lo, q_hi, q_try, dim);
 
-						float x2;
-						float y2;
-						float a2;
 						float clearance2;
-						unsigned idx_try;
-						float val_try;
+						__declspec(align(32)) float sin_try[AGP_MAX_FULL_DIM];
+						__declspec(align(32)) float cos_try[AGP_MAX_FULL_DIM];
+						float val2;
+						float x2, y2, a2;
+						unsigned idx2;
 
-						const bool feasible_try = eval_local_model(
-							q_out, x2, y2, a2, idx_try, val_try, &clearance2);
-
-						if (!feasible_try)
+						if (!eval_local_model(q_try, x2, y2, a2, idx2, val2, &clearance2, sin_try, cos_try))
 						{
 							alpha *= tau;
-							++backtrack;
+							++bt;
 							continue;
 						}
 
-						const float armijo_rhs = fmaf(fmaf(c1, alpha, 0.0f), gtd, f_base);
-						if (val_try > armijo_rhs)
+						const float rhs = fmaf(c1 * alpha, gtd, f_base);
+						if (val2 > rhs)
 						{
 							alpha *= tau;
-							++backtrack;
+							++bt;
 							continue;
 						}
 
-						if (!confirm_local_model_if_needed(
-							q_out, x2, y2, a2, clearance2, idx_try, val_try
-						) ||
-							(val_try > armijo_rhs))
+						if (!confirm_local_model_if_needed(q_try, x2, y2, a2, clearance2, idx2, val2) || val2 > rhs)
 						{
 							if constexpr (HasObstacles && IsTransition)
 							{
 								const float rejected_alpha = alpha;
 								alpha *= tau_full_fail;
-								transition_alpha_cap_local =
-									(fminf)(transition_alpha_cap_local, rejected_alpha * tau_full_fail);
-
+								transition_alpha_cap_local = (fminf)(transition_alpha_cap_local, rejected_alpha * tau_full_fail);
 								++full_rejects;
-								++backtrack;
-
-								if (full_rejects >= 3 && alpha < 1.0e-5f)
-									break;
-
+								++bt;
+								if (full_rejects > 2 && alpha < 1.0e-5f) break;
 								continue;
 							}
-
 							alpha *= tau;
-							++backtrack;
+							++bt;
 							continue;
 						}
 
 						if constexpr (HasObstacles && IsTransition)
 						{
-							const float proposed_cap = alpha * 1.5f;
-							if (proposed_cap > transition_alpha_cap_local)
-							{
-								transition_alpha_cap_local = (proposed_cap < 1.0f) ? proposed_cap : 1.0f;
-							}
+							const float grown_cap = alpha * 1.5f;
+							if (grown_cap > transition_alpha_cap_local)
+								transition_alpha_cap_local = (grown_cap < 1.0f) ? grown_cap : 1.0f;
 						}
 
+						memcpy(sin_out, sin_try, static_cast<size_t>(n) * sizeof(float));
+						memcpy(cos_out, cos_try, static_cast<size_t>(n) * sizeof(float));
+
 						alpha_io = alpha;
-						f_out = val_try;
+						f_out = val2;
 						x_out = x2;
 						y_out = y2;
 						a_out = a2;
-						idx_out = idx_try;
+						idx_out = idx2;
 						return true;
 					}
-
 					return false;
 				};
 
-			bool lbfgs_already_tried = false;
-			int outer = 0;
-			while (outer < max_outer_iters)
-			{
-				__declspec(align(32)) float grad[AGP_MAX_FULL_DIM];
-				float grad_norm2;
-				computeGrad(q_inout, x_io, y_io, grad, grad_norm2);
+			float lambda = 0.0f;
+			int lm_accepts = 0;
+			int lm_reject_streak = 0;
 
-				__declspec(align(32)) float dir_gd[AGP_MAX_FULL_DIM];
-				int i = 0;
+			int lm_it = 0;
+			while (lm_it < max_lm_iters)
+			{
+				float jj00, jj01, jj02, jj11, jj12, jj22;
+				build_jacobian(q_inout, sin_arr, cos_arr, jj00, jj01, jj02, jj11, jj12, jj22);
+
+				const float ex = x_io - cost.targetX;
+				const float ey = y_io - cost.targetY;
+				const float ea = cost.wrap_pi(a_io - cost.targetAngle);
+
+				if (!static_cast<bool>(lambda))
+				{
+					const float sqrtf_mean_diag = sqrtf(fmaf(jj00, 0.33333333333f, fmaf(jj11, 0.33333333333f, jj22 * 0.33333333333f)));
+					lambda = fmaf(capture_w, fmaf(sqrtf(jj00), sqrtf_mean_diag, fmaf(sqrtf(jj11), sqrtf_mean_diag, sqrtf(jj22) * sqrtf_mean_diag)), reg_sum) / dim_f * 0.06f;
+				}
+
+				float projected_g2 = 0.0f;
+
+				if constexpr (IsTransition)
+				{
+					float s00 = 1.0f / capture_w;
+					float s01 = 0.0f;
+					float s02 = 0.0f;
+					float s11 = 1.0f / capture_w;
+					float s12 = 0.0f;
+					float s22 = 1.0f / capture_w;
+
+					float v0 = 0.0f;
+					float v1 = 0.0f;
+					float v2 = 0.0f;
+
+					int d = 0;
+					__pragma(loop(ivdep))
+						while (d < dim)
+						{
+							float rd;
+							float rr;
+							if (d < n)
+							{
+								rd = cost.transitionEnergyWeight;
+								rr = cost.wrap_pi(q_inout[d] - cost.referenceState[d]);
+							}
+							else
+							{
+								rd = weighted_len_scale;
+								rr = q_inout[d] - cost.referenceState[d];
+							}
+							reg_diag[d] = rd;
+
+							const float gh = fmaf(capture_w,
+								fmaf(jx[d], ex, fmaf(jy[d], ey, ja[d] * ea)),
+								rd * rr);
+							grad_half[d] = gh;
+
+							const float invr = 1.0f / (rd + lambda);
+							inv_rdiag[d] = invr;
+
+							const float xj = jx[d];
+							const float yj = jy[d];
+							const float aj = ja[d];
+
+							s00 = fmaf(invr * xj, xj, s00);
+							s01 = fmaf(invr * xj, yj, s01);
+							s02 = fmaf(invr * xj, aj, s02);
+							s11 = fmaf(invr * yj, yj, s11);
+							s12 = fmaf(invr * yj, aj, s12);
+							s22 = fmaf(invr * aj, aj, s22);
+
+							const float u = invr * gh;
+							v0 = fmaf(xj, u, v0);
+							v1 = fmaf(yj, u, v1);
+							v2 = fmaf(aj, u, v2);
+
+							float pg = gh;
+							const float qd = q_inout[d];
+							if ((qd <= q_lo[d] && pg > 0.0f) || (qd >= q_hi[d] && pg < 0.0f)) pg = 0.0f;
+							projected_g2 = fmaf(pg, pg, projected_g2);
+							++d;
+						}
+
+					float z0, z1, z2;
+					solve_sym3_ldlt(s00, s01, s02, s11, s12, s22, v0, v1, v2, z0, z1, z2);
+
+					d = 0;
+					__pragma(loop(ivdep))
+						while (d < dim)
+						{
+							const float invr = inv_rdiag[d];
+							const float u = invr * grad_half[d];
+							const float corr = invr * fmaf(jx[d], z0, fmaf(jy[d], z1, ja[d] * z2));
+							dir_lm[d] = corr - u;
+							++d;
+						}
+				}
+				else
+				{
+					float z0, z1, z2;
+					solve_sym3_ldlt(
+						jj00 + lambda, jj01, jj02,
+						jj11 + lambda, jj12, jj22 + lambda,
+						ex, ey, ea,
+						z0, z1, z2);
+
+					int d = 0;
+					__pragma(loop(ivdep))
+						while (d < dim)
+						{
+							const float gh = fmaf(jx[d], ex, fmaf(jy[d], ey, ja[d] * ea));
+							grad_half[d] = gh;
+							reg_diag[d] = 0.0f;
+
+							const float dd = -fmaf(jx[d], z0, fmaf(jy[d], z1, ja[d] * z2));
+							dir_lm[d] = dd;
+
+							float pg = gh;
+							const float qd = q_inout[d];
+							if ((qd <= q_lo[d] && pg > 0.0f) || (qd >= q_hi[d] && pg < 0.0f)) pg = 0.0f;
+							projected_g2 = fmaf(pg, pg, projected_g2);
+							++d;
+						}
+				}
+
+				if (projected_g2 < fmaf(f_io, 1.0e-4f, 1.0e-4f))
+				{
+					break;
+				}
+
+				float alpha = 1.0f;
+				if constexpr (HasObstacles && IsTransition)
+					alpha = (std::min)(alpha, transition_alpha_cap_local);
+
+				agp_axpy_clamp_avx2(q_inout, dir_lm, alpha, q_lo, q_hi, q_try, dim);
+
+				float gts = 0.0f;
+				float js0 = 0.0f;
+				float js1 = 0.0f;
+				float js2 = 0.0f;
+				float reg_quad = 0.0f;
+
+				int d = 0;
 				__pragma(loop(ivdep))
-					while (i < dim)
+					while (d < dim)
 					{
-						dir_gd[i] = -grad[i];
-						++i;
+						const float s = q_try[d] - q_inout[d];
+						gts = fmaf(grad_half[d], s, gts);
+						js0 = fmaf(jx[d], s, js0);
+						js1 = fmaf(jy[d], s, js1);
+						js2 = fmaf(ja[d], s, js2);
+						if constexpr (IsTransition)
+							reg_quad = fmaf(reg_diag[d] * s, s, reg_quad);
+						++d;
 					}
 
-				float gtd_gd = -grad_norm2;
-				float eta_trial = eta;
-				float f_new;
-				float x_new;
-				float y_new;
-				float a_new;
+				float gtd_dir = 0.0f;
+				__pragma(loop(ivdep))
+					for (int d = 0; d < dim; ++d) {
+						gtd_dir = fmaf(grad_half[d], dir_lm[d], gtd_dir);
+					}
+
+				if (gtd_dir > 0.0f) {
+					lambda *= 4.0f;
+					++lm_reject_streak;
+					if (lm_reject_streak == max_lm_rejects)
+						break;
+					++lm_it;
+					continue;
+				}
+
+				float f_before = f_io, f_new, x_new, y_new, a_new;
+				__declspec(align(32)) float sin_try[AGP_MAX_FULL_DIM];
+				__declspec(align(32)) float cos_try[AGP_MAX_FULL_DIM];
 				unsigned idx_new;
+				bool armijo_ok = armijo_line_search(q_inout, f_io, dir_lm, gtd_dir,
+					alpha, f_new, x_new, y_new, a_new, idx_new,
+					sin_try, cos_try);
 
-				const bool found = armijoLineSearch(q_inout, f_io, dir_gd, gtd_gd, eta_trial, q_try, f_new, x_new, y_new, a_new, idx_new);
-				if (!found) break;
-
-				memcpy(q_inout, q_try, static_cast<size_t>(dim) * sizeof(float));
-				f_io = f_new;
-				x_io = x_new;
-				y_io = y_new;
-				a_io = a_new;
-				idx_io = idx_new;
-				eta = eta_trial;
-
-				const float rel_impr = (f_start - f_io) / f_start;
-				if (!lbfgs_already_tried && rel_impr > lbfgs_trigger)
+				if (!armijo_ok)
 				{
-					lbfgs_already_tried = true;
+					lambda *= 4.0f;
+					++lm_reject_streak;
+					if (lm_reject_streak == max_lm_rejects)
+						break;
+					++lm_it;
+					continue;
+				}
 
-					__declspec(align(32)) float q_resume[AGP_MAX_FULL_DIM];
-					memcpy(q_resume, q_inout, static_cast<size_t>(dim) * sizeof(float));
-					float f_resume = f_io, x_resume = x_io, y_resume = y_io, a_resume = a_io;
-					unsigned idx_resume = idx_io;
-					float eta_resume = eta;
+				const float js2_norm = fmaf(js0, js0, fmaf(js1, js1, js2 * js2));
+				const float model_quad = fmaf(capture_w, js2_norm, reg_quad);
+				const float predicted_reduction = fmaf(2.0f, gts, model_quad);
+				if (predicted_reduction < 0.0f)
+				{
+					memcpy(q_inout, q_try, static_cast<size_t>(dim) * sizeof(float));
+					f_io = f_new;
+					x_io = x_new;
+					y_io = y_new;
+					a_io = a_new;
+					idx_io = idx_new;
+					++lm_accepts;
+					lm_reject_streak = 0;
+				}
+				else
+				{
+					lambda *= 4.0f;
+					++lm_reject_streak;
+					if (lm_reject_streak == max_lm_rejects) break;
+					++lm_it;
+					continue;
+				}
 
-					__declspec(align(32)) float q_best_lbfgs[AGP_MAX_FULL_DIM];
-					memcpy(q_best_lbfgs, q_inout, static_cast<size_t>(dim) * sizeof(float));
-					float f_best_lbfgs = f_io, x_best_lbfgs = x_io, y_best_lbfgs = y_io, a_best_lbfgs = a_io;
-					unsigned idx_best_lbfgs = idx_io;
+				if ((f_start - f_io) / f_start > lbfgs_trigger)
+				{
+					__declspec(align(32)) float s_hist[AGP_MAX_LBFGS_HISTORY][AGP_MAX_FULL_DIM];
+					__declspec(align(32)) float y_hist[AGP_MAX_LBFGS_HISTORY][AGP_MAX_FULL_DIM];
+					__declspec(align(32)) float rho_hist[AGP_MAX_LBFGS_HISTORY];
+					__declspec(align(32)) float alpha_hist[AGP_MAX_LBFGS_HISTORY];
+					__declspec(align(32)) float gk[AGP_MAX_FULL_DIM];
+					__declspec(align(32)) float g_old[AGP_MAX_FULL_DIM];
+					__declspec(align(32)) float q_old[AGP_MAX_FULL_DIM];
+					__declspec(align(32)) float work[AGP_MAX_FULL_DIM];
+					__declspec(align(32)) float dir[AGP_MAX_FULL_DIM];
 
-					__declspec(align(32)) float s_hist[m_lbfgs][AGP_MAX_FULL_DIM];
-					__declspec(align(32)) float y_hist[m_lbfgs][AGP_MAX_FULL_DIM];
-					__declspec(align(32)) float rho_hist[m_lbfgs];
-					__declspec(align(32)) float alpha_hist[m_lbfgs];
+					float gk_norm2 = 0.0f;
+					compute_full_grad(q_inout, x_io, y_io, a_io, sin_arr, cos_arr, gk, gk_norm2);
 
 					int hist_size = 0;
-
-					__declspec(align(32)) float gk[AGP_MAX_FULL_DIM];
-					float gk_norm2 = 0.0f;
-					computeGrad(q_inout, x_io, y_io, gk, gk_norm2);
-
-					bool lbfgs_ok = true;
-					float alpha_k = refine_eta_init;
+					int hist_head = 0;
 					int it_lbfgs = 0;
 
 					while (it_lbfgs < max_lbfgs_iters)
 					{
-						bool use_lbfgs_direction = true;
+						if (gk_norm2 < fmaf(f_io, 1.0e-6f, 1.0e-6f))
+							break;
 
-						__declspec(align(32)) float dir[AGP_MAX_FULL_DIM];
-
+						int d = 0;
 						if (!static_cast<bool>(hist_size))
 						{
-							int d = 0;
 							__pragma(loop(ivdep))
 								while (d < dim)
 								{
@@ -4261,91 +4584,86 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						}
 						else
 						{
-							__declspec(align(32)) float q_vec[AGP_MAX_FULL_DIM];
-							int d = 0;
-							__pragma(loop(ivdep))
-								while (d < dim)
-								{
-									q_vec[d] = gk[d];
-									++d;
-								}
+							memcpy(work, gk, static_cast<size_t>(dim) * sizeof(float));
 
-							for (int jj = hist_size - 1; jj >= 0; --jj)
+							int logical = hist_size - 1;
+							while (logical >= 0)
 							{
-								float dot_sq = 0.0f;
+								const int h = (hist_head + logical) & (LBFGS_M - 1);
+								float dot = 0.0f;
 								d = 0;
 								__pragma(loop(ivdep))
 									while (d < dim)
 									{
-										dot_sq = fmaf(s_hist[jj][d], q_vec[d], dot_sq);
+										dot = fmaf(s_hist[h][d], work[d], dot);
 										++d;
 									}
-								const float a_coeff = dot_sq * rho_hist[jj];
-								alpha_hist[jj] = a_coeff;
+								const float ah = dot * rho_hist[h];
+								alpha_hist[h] = ah;
 								d = 0;
 								__pragma(loop(ivdep))
 									while (d < dim)
 									{
-										q_vec[d] = fmaf(-a_coeff, y_hist[jj][d], q_vec[d]);
+										work[d] = fmaf(-ah, y_hist[h][d], work[d]);
 										++d;
 									}
+								--logical;
 							}
 
-							float gamma = 1.0f;
-							{
-								const int last = hist_size - 1;
-								float yy = 0.0f;
-								int d = 0;
-								__pragma(loop(ivdep))
-									while (d < dim)
-									{
-										yy = fmaf(y_hist[last][d], y_hist[last][d], yy);
-										++d;
-									}
-								const float ys = 1.0f / rho_hist[last];
-								if (yy > 0.0f) gamma = ys / yy;
-							}
-
-							__declspec(align(32)) float r_vec[AGP_MAX_FULL_DIM];
+							const int newest = (hist_head + hist_size - 1) & (LBFGS_M - 1);
+							float yy = 0.0f;
 							d = 0;
 							__pragma(loop(ivdep))
 								while (d < dim)
 								{
-									r_vec[d] = gamma * q_vec[d];
+									yy = fmaf(y_hist[newest][d], y_hist[newest][d], yy);
+									++d;
+								}
+							const float gamma = (1.0f / rho_hist[newest]) / yy;
+
+							d = 0;
+							__pragma(loop(ivdep))
+								while (d < dim)
+								{
+									dir[d] = gamma * work[d];
 									++d;
 								}
 
-							for (int jj = 0; jj < hist_size; ++jj)
+							logical = 0;
+							while (logical < hist_size)
 							{
-								float dot_yr = 0.0f;
+								const int h = (hist_head + logical) & (LBFGS_M - 1);
+								float dot = 0.0f;
 								d = 0;
 								__pragma(loop(ivdep))
 									while (d < dim)
 									{
-										dot_yr = fmaf(y_hist[jj][d], r_vec[d], dot_yr);
+										dot = fmaf(y_hist[h][d], dir[d], dot);
 										++d;
 									}
-								const float b_coeff = dot_yr * rho_hist[jj];
-								const float coeff = alpha_hist[jj] - b_coeff;
+								const float beta = dot * rho_hist[h];
+								const float coeff = alpha_hist[h] - beta;
 								d = 0;
-								while (d < dim)
-								{
-									r_vec[d] = fmaf(coeff, s_hist[jj][d], r_vec[d]);
-									++d;
-								}
+								__pragma(loop(ivdep))
+									while (d < dim)
+									{
+										dir[d] = fmaf(coeff, s_hist[h][d], dir[d]);
+										++d;
+									}
+								++logical;
 							}
 
 							d = 0;
 							__pragma(loop(ivdep))
 								while (d < dim)
 								{
-									dir[d] = -r_vec[d];
+									dir[d] = -dir[d];
 									++d;
 								}
 						}
 
 						float gtd = 0.0f;
-						int d = 0;
+						d = 0;
 						__pragma(loop(ivdep))
 							while (d < dim)
 							{
@@ -4353,58 +4671,46 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 								++d;
 							}
 
-						if (static_cast<bool>(gtd))
+						if (gtd > 0.0f)
 						{
+							gtd = 0.0f;
 							d = 0;
 							__pragma(loop(ivdep))
 								while (d < dim)
 								{
 									dir[d] = -gk[d];
+									gtd = fmaf(gk[d], dir[d], gtd);
 									++d;
 								}
-							gtd = -gk_norm2;
-							use_lbfgs_direction = false;
+							hist_size = 0;
+							hist_head = 0;
 						}
 
-						__declspec(align(32)) float q_old[AGP_MAX_FULL_DIM];
-						__declspec(align(32)) float g_old[AGP_MAX_FULL_DIM];
 						memcpy(q_old, q_inout, static_cast<size_t>(dim) * sizeof(float));
 						memcpy(g_old, gk, static_cast<size_t>(dim) * sizeof(float));
 
-						float alpha_try = alpha_k;
-						float f_try, x_try, y_try, a_try;
-						unsigned idx_try;
-
-						const bool step_ok = armijoLineSearch(q_inout, f_io, dir, gtd, alpha_try, q_try, f_try, x_try, y_try, a_try, idx_try);
-						if (!step_ok)
-						{
-							lbfgs_ok = false;
+						float alpha = (refine_eta_init < 1.0f) ? refine_eta_init : 1.0f;
+						float f2, x2, y2, a2;
+						unsigned idx2;
+						if (!armijo_line_search(q_inout, f_io, dir, gtd, alpha, f2, x2, y2, a2, idx2,
+							sin_arr, cos_arr))
 							break;
-						}
 
 						memcpy(q_inout, q_try, static_cast<size_t>(dim) * sizeof(float));
-						f_io = f_try;
-						x_io = x_try;
-						y_io = y_try;
-						a_io = a_try;
-						idx_io = idx_try;
-						alpha_k = alpha_try;
+						f_io = f2;
+						x_io = x2;
+						y_io = y2;
+						a_io = a2;
+						idx_io = idx2;
 
-						computeGrad(q_inout, x_io, y_io, gk, gk_norm2);
-
-						if (f_io < f_best_lbfgs)
-						{
-							f_best_lbfgs = f_io;
-							memcpy(q_best_lbfgs, q_inout, static_cast<size_t>(dim) * sizeof(float));
-							x_best_lbfgs = x_io;
-							y_best_lbfgs = y_io;
-							a_best_lbfgs = a_io;
-							idx_best_lbfgs = idx_io;
-						}
+						compute_full_grad(q_inout, x_io, y_io, a_io, sin_arr, cos_arr, gk, gk_norm2);
 
 						float ys = 0.0f;
+						float ss = 0.0f;
+						float yy = 0.0f;
 						__declspec(align(32)) float s_new[AGP_MAX_FULL_DIM];
 						__declspec(align(32)) float y_new[AGP_MAX_FULL_DIM];
+
 						d = 0;
 						__pragma(loop(ivdep))
 							while (d < dim)
@@ -4414,106 +4720,74 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 								s_new[d] = sd;
 								y_new[d] = yd;
 								ys = fmaf(yd, sd, ys);
+								ss = fmaf(sd, sd, ss);
+								yy = fmaf(yd, yd, yy);
 								++d;
 							}
 
-						if (ys < eps_lbfgs_curv)
+						if (ys > 1.0e-6f && ys * ys > 1.0e-4f * ss * yy)
 						{
-							hist_size = 0;
-						}
-						else
-						{
-							if (hist_size < m_lbfgs)
+							int h;
+							if (hist_size < LBFGS_M)
 							{
-								const int idx_hist = hist_size;
-								rho_hist[idx_hist] = 1.0f / ys;
-								d = 0;
-								__pragma(loop(ivdep))
-									while (d < dim)
-									{
-										s_hist[idx_hist][d] = s_new[d];
-										y_hist[idx_hist][d] = y_new[d];
-										++d;
-									}
+								h = (hist_head + hist_size) & (LBFGS_M - 1);
 								++hist_size;
 							}
 							else
 							{
-								for (int jj = 0; jj < m_lbfgs - 1; ++jj)
-								{
-									rho_hist[jj] = rho_hist[jj + 1];
-									d = 0;
-									__pragma(loop(ivdep))
-										while (d < dim)
-										{
-											s_hist[jj][d] = s_hist[jj + 1][d];
-											y_hist[jj][d] = y_hist[jj + 1][d];
-											++d;
-										}
-								}
-								const int idx_hist = m_lbfgs - 1;
-								rho_hist[idx_hist] = 1.0f / ys;
-								d = 0;
-								__pragma(loop(ivdep))
-									while (d < dim)
-									{
-										s_hist[idx_hist][d] = s_new[d];
-										y_hist[idx_hist][d] = y_new[d];
-										++d;
-									}
-								hist_size = m_lbfgs;
+								h = hist_head;
+								hist_head = (hist_head + 1) & (LBFGS_M - 1);
 							}
+
+							rho_hist[h] = 1.0f / ys;
+							memcpy(s_hist[h], s_new, static_cast<size_t>(dim) * sizeof(float));
+							memcpy(y_hist[h], y_new, static_cast<size_t>(dim) * sizeof(float));
+						}
+						else
+						{
+							hist_size = 0;
+							hist_head = 0;
 						}
 
 						++it_lbfgs;
 					}
-
-					if (lbfgs_ok)
-					{
-						memcpy(q_inout, q_best_lbfgs, static_cast<size_t>(dim) * sizeof(float));
-						f_io = f_best_lbfgs;
-						x_io = x_best_lbfgs;
-						y_io = y_best_lbfgs;
-						a_io = a_best_lbfgs;
-						idx_io = idx_best_lbfgs;
-						break;
-					}
-					else
-					{
-						if (f_best_lbfgs < f_resume)
-						{
-							memcpy(q_inout, q_best_lbfgs, static_cast<size_t>(dim) * sizeof(float));
-							f_io = f_best_lbfgs;
-							x_io = x_best_lbfgs;
-							y_io = y_best_lbfgs;
-							a_io = a_best_lbfgs;
-							idx_io = idx_best_lbfgs;
-						}
-						else
-						{
-							memcpy(q_inout, q_resume, static_cast<size_t>(dim) * sizeof(float));
-							f_io = f_resume;
-							x_io = x_resume;
-							y_io = y_resume;
-							a_io = a_resume;
-							idx_io = idx_resume;
-						}
-						eta = eta_resume;
-					}
 				}
 
-				++outer;
+				const float exp_arg = 1.0f / fmaf((f_io - f_before) / predicted_reduction, 1.2525f, 0.9706875f);
+				if (exp_arg < 0.5f) {
+					lambda *= fmaf(exp_arg,
+						fmaf(exp_arg,
+							fmaf(exp_arg,
+								fmaf(exp_arg,
+									fmaf(exp_arg,
+										fmaf(exp_arg, 0.00138888889f,
+											0.00833333333f),
+										0.04166666667f),
+									0.16666666667f),
+								0.5f),
+							1.0f),
+						offset_mult);
+				}
+				else
+				{
+					const int n = _mm_cvt_ss2si(_mm_set_ss(exp_arg * 1.44269504089f));
+					const float r = fmaf(static_cast<float>(-n), 0.69314718056f, exp_arg);
+					lambda *= ldexpf(fmaf(r, fmaf(r, fmaf(r, fmaf(r, fmaf(r, 0.00833333377f, 0.0416666679f), 0.16666667f), 0.5f), 1.0f), 1.0f), n) + offset;
+				}
+
+				++lm_it;
 			}
 
 			return static_cast<bool>(memcmp(q_inout, q_initial, static_cast<size_t>(dim) * sizeof(float)));
 		};
 
-	auto evaluate_trial_from_q = [&](const float* q_seed) noexcept -> TrialPoint
+	auto evaluate_trial_from_q = [&](const float* q_seed, const bool do_refine) noexcept -> TrialPoint
 		{
 			TrialPoint tr;
 			memcpy(tr.q, q_seed, static_cast<size_t>(dim) * sizeof(float));
 			float clearance;
-			tr.feasible = cost.evaluate_state_without_transition_continuity<HasObstacles, VariableLen>(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f, &clearance);
+			__declspec(align(32)) float sin_arr[AGP_MAX_FULL_DIM], cos_arr[AGP_MAX_FULL_DIM];
+			tr.feasible = cost.evaluate_state_without_transition_continuity<HasObstacles, VariableLen>(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f, &clearance, sin_arr, cos_arr);
 			bool q_changed = false;
 			if (tr.feasible)
 			{
@@ -4522,7 +4796,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					tr.f = cost.compute_transition_objective_from_pose(tr.q, tr.x, tr.y, tr.a);
 				else
 					tr.f = cost.compute_positioning_objective_from_pose(tr.q, tr.x, tr.y, tr.a);
-				q_changed = refine_trial(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f);
+				if (do_refine) q_changed = refine_trial(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f, sin_arr, cos_arr);
 			}
 			tr.feasible = (tr.idx == fullConstraintIndex);
 			tr.t = q_changed ? agp_clamp_unit_open_scalar(map.pointToT(tr.q)) : agp_clamp_unit_open_scalar(map.pointToT(q_seed));
@@ -4535,7 +4809,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			TrialPoint tr;
 			map.map01ToPoint(t_base, tr.q);
 			float clearance;
-			tr.feasible = cost.evaluate_state_without_transition_continuity<HasObstacles, VariableLen>(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f, &clearance);
+			__declspec(align(32)) float sin_arr[AGP_MAX_FULL_DIM], cos_arr[AGP_MAX_FULL_DIM];
+			tr.feasible = cost.evaluate_state_without_transition_continuity<HasObstacles, VariableLen>(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f, &clearance, sin_arr, cos_arr);
 			bool q_changed = false;
 			if (tr.feasible)
 			{
@@ -4544,7 +4819,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					tr.f = cost.compute_transition_objective_from_pose(tr.q, tr.x, tr.y, tr.a);
 				else
 					tr.f = cost.compute_positioning_objective_from_pose(tr.q, tr.x, tr.y, tr.a);
-				q_changed = refine_trial(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f);
+				q_changed = refine_trial(tr.q, tr.x, tr.y, tr.a, tr.idx, tr.f, sin_arr, cos_arr);
 			}
 			tr.feasible = (tr.idx == fullConstraintIndex);
 			tr.t = q_changed ? agp_clamp_unit_open_scalar(map.pointToT(tr.q)) : t_base;
@@ -4558,8 +4833,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		[&](const TrialPoint& tr, float r_eff_cur, float adaptive_coeff_cur) noexcept
 		{
 			IntervalND* src = H[0u];
-			if (!(tr.t > src->x1 && tr.t < src->x2)) return;
-			const float src_len = src->x2 - src->x1;
+			if (tr.t < src->x1 || tr.t > src->x2) return;
 			const unsigned long long mid_i = agp_t_to_firstchunk_idx_open(map, tr.t);
 
 			IntervalND* L = nullptr;
@@ -4578,9 +4852,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 			if (L == nullptr && Rv == nullptr)
 			{
-				heap_erase_at(H, 0u);
-				if (src_len > dmax)
-					recompute_dmax();
+				H[0u] = H.back();
+				H.pop_back();
+				heap_sift_down(H, 0u);
 				return;
 			}
 
@@ -4595,13 +4869,10 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				only->ChangeCharacteristic(m_cur, inv_m_cur);
 
 				H[0u] = only;
-				heap_fix_at(H, 0u);
+				heap_sift_down(H, 0u);
 
 				if (Mmax > fmaf(adaptive_coeff_cur, prevMmax, 0.0f))
 					recompute_heap_constM(m_cur);
-
-				if (src_len > dmax)
-					recompute_dmax();
 
 				return;
 			}
@@ -4616,14 +4887,23 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			Rv->ChangeCharacteristic(m_cur, inv_m_cur);
 
 			H[0u] = L;
-			heap_fix_at(H, 0u);
+			heap_sift_down(H, 0u);
 			heap_push(H, Rv);
 
 			if (Mmax > fmaf(adaptive_coeff_cur, prevMmax, 0.0f))
 				recompute_heap_constM(m_cur);
 
-			if (src_len > dmax)
-				recompute_dmax();
+			const float len1 = tr.t - src->x1;
+			const float len2 = src->x2 - tr.t;
+			if (len1 + len2 == dmax)
+			{
+				dmax = fmaxf(len1, len2);
+				for (auto* pI : H)
+				{
+					const float Ls = pI->x2 - pI->x1;
+					if (Ls > dmax) dmax = Ls;
+				}
+			}
 		};
 
 	auto progress_outgoing = [&]() noexcept
@@ -4717,13 +4997,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			__assume((uintptr_t)current_q % 32 == 0);
 			memcpy(base_q_copy, base.q, static_cast<size_t>(dim) * sizeof(float));
 
-			auto evaluate_hj_candidate = [&](const float* __restrict q_candidate) noexcept -> TrialPoint
-				{
-					TrialPoint tr = evaluate_trial_from_q(q_candidate);
-					inject_trial_into_queue(tr, r_eff_cur, adaptive_coeff_cur);
-					return tr;
-				};
-
 			bool improved_any = false;
 
 			int ord = 0;
@@ -4737,7 +5010,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 				{
 					current_q[d] = original_val + step;
-					const TrialPoint tp = evaluate_hj_candidate(current_q);
+					const TrialPoint tp = evaluate_trial_from_q(current_q, false);
+					inject_trial_into_queue(tp, r_eff_cur, adaptive_coeff_cur);
 					if (better_indexed(tp.idx, tp.f, base.idx, base.f))
 					{
 						base = tp;
@@ -4747,7 +5021,8 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 				{
 					current_q[d] = original_val - step;
-					const TrialPoint tp = evaluate_hj_candidate(current_q);
+					const TrialPoint tp = evaluate_trial_from_q(current_q, false);
+					inject_trial_into_queue(tp, r_eff_cur, adaptive_coeff_cur);
 					if (better_indexed(tp.idx, tp.f, base.idx, base.f))
 					{
 						base = tp;
@@ -4768,9 +5043,15 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						q_pattern[d] = fmaf(hj_pattern_gain, base.q[d] - base_q_copy[d], base.q[d]);
 						++d;
 					}
-				const TrialPoint pat_tp = evaluate_hj_candidate(q_pattern);
+				const TrialPoint pat_tp = evaluate_trial_from_q(q_pattern, false);
 				if (better_indexed(pat_tp.idx, pat_tp.f, base.idx, base.f))
 					base = pat_tp;
+				const TrialPoint refined = evaluate_trial_from_q(base.q, true);
+				if (better_indexed(refined.idx, refined.f, base.idx, base.f))
+				{
+					base = refined;
+					inject_trial_into_queue(refined, r_eff_cur, adaptive_coeff_cur);
+				}
 			}
 			else
 			{
@@ -4784,21 +5065,37 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			}
 		};
 
-	const size_t seedStride = 64;
-
 	std::vector<float, boost::alignment::aligned_allocator<float, 32u>> seeds;
-	seeds.resize(static_cast<size_t>(64u * seedStride));
+	seeds.resize(static_cast<size_t>(AGP_MAX_GENERATED_SEEDS) * static_cast<size_t>(AGP_SEED_STRIDE));
 
 	int seedCnt = generate_heuristic_seeds(
 		cost,
 		map,
 		dim,
 		seeds.data(),
-		seedStride,
+		AGP_SEED_STRIDE,
 		seed + 7919u * static_cast<unsigned>(rank));
 
-	int K = static_cast<int>(fmaf(-sqrt_dim * dim_f, 0.725f, 10.95f));
-	if (K < 0) K = 0;
+	static constexpr int AGP_K_VALUES[AGP_MAX_FULL_DIM + 1] = {
+		0,
+		10,
+		8,
+		7,
+		5,
+		2,
+		2,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0,
+		0
+	};
+	const int K = AGP_K_VALUES[dim];
 
 	H.reserve(static_cast<size_t>(maxIter + K + seedCnt + 32u));
 
@@ -4822,7 +5119,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		H.push_back(I);
 	}
 
-	const float t_seed1 = agp_clamp_unit_open_scalar(map.pointToT(seeds.data() + seedStride));
+	const float t_seed1 = agp_clamp_unit_open_scalar(map.pointToT(seeds.data() + AGP_SEED_STRIDE));
 	const float t1b1 = agp_clamp_unit_open_scalar(t_seed1 - interval_size);
 	const float t2b1 = agp_clamp_unit_open_scalar(t_seed1 + interval_size);
 	const float mid1 = fmaf(t1b1, 0.5f, fmaf(t2b1, 0.5f, 0.0f));
@@ -4840,7 +5137,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 		heap_push(H, I);
 	}
 
-	const float t_seed2 = agp_clamp_unit_open_scalar(map.pointToT(seeds.data() + 2u * seedStride));
+	const float t_seed2 = agp_clamp_unit_open_scalar(map.pointToT(seeds.data() + 2u * AGP_SEED_STRIDE));
 	const float t1b2 = agp_clamp_unit_open_scalar(t_seed2 - interval_size);
 	const float t2b2 = agp_clamp_unit_open_scalar(t_seed2 + interval_size);
 	const float mid2 = fmaf(t1b2, 0.5f, fmaf(t2b2, 0.5f, 0.0f));
@@ -4864,7 +5161,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 	for (size_t i = 3u; i < seedCnt; ++i)
 	{
-		const float t_seed = agp_clamp_unit_open_scalar(map.pointToT(seeds.data() + i * seedStride));
+		const float t_seed = agp_clamp_unit_open_scalar(map.pointToT(seeds.data() + i * AGP_SEED_STRIDE));
 		const float interval_size = stagnation_seed_interval * exp2f(A * static_cast<float>(i - 3u));
 
 		const float t1b = agp_clamp_unit_open_scalar(t_seed - interval_size);
@@ -4925,6 +5222,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 	for (size_t i = 1u; i < grid_trials.size(); ++i)
 	{
 		IntervalND* I = make_interval_from_trials(grid_trials[i - 1u], grid_trials[i]);
+		if (!static_cast<bool>(I)) continue;
 		update_pockets_and_Mmax(I);
 		const float m_curr = r * Mmax;
 		const float inv_m_curr = 1.0f / m_curr;
@@ -4951,8 +5249,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 	while (true)
 	{
-		float interval_len = (dim > 1) ? fmaf(H.front()->x2, 1.0f, -H.front()->x1) : H.front()->diam;
-		if (interval_len < stop_len || ++it == maxIter)
+		if (H.front()->diam < eps || ++it == maxIter)
 		{
 			if (multi_start)
 			{
@@ -4987,7 +5284,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 						float x2_loc, y2_loc, a2_loc;
 						unsigned idx2;
 						float val2;
-						bool feasible2 = cost.evaluate_indexed<HasObstacles, VariableLen, IsTransition>(q_local, x2_loc, y2_loc, a2_loc, idx2, val2);
+						bool feasible2 = cost.evaluate_indexed<HasObstacles, VariableLen, IsTransition>(q_local, x2_loc, y2_loc, a2_loc, idx2, val2, nullptr, nullptr);
 						if (feasible2 && val2 < bestLocF)
 						{
 							bestLocF = val2;
@@ -5024,9 +5321,9 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				bestY = bestIndexedY;
 				bestA = bestIndexedA;
 			}
-			H.clear();
 			out_iterations = static_cast<size_t>(it);
-			out_achieved_epsilon = interval_len;
+			out_achieved_epsilon = H.front()->diam;
+			H.clear();
 			return;
 		}
 
@@ -5157,7 +5454,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			float t_seeds[AGP_MAX_FULL_DIM];
 			int seed_count = 0;
 			int num_ik = num_ik_base;
-			float dist_to_target = sqrtf(fmaf(cost.targetX, cost.targetX, fmaf(cost.targetY, cost.targetY, 0.0f)));
+			float dist_to_target = sqrtf(fmaf(cost.targetX, cost.targetX, cost.targetY * cost.targetY));
 			float max_reach = 0.0f;
 			if constexpr (VariableLen)
 			{
@@ -5165,16 +5462,16 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			}
 			else
 			{
-				max_reach = fmaf(cost.fixedLength, static_cast<float>(n), 0.0f);
+				max_reach = cost.fixedLength * static_cast<float>(n);
 			}
 			float ratio = dist_to_target / max_reach;
 			bool prefer_extended = (ratio > 0.7f), prefer_compact = (ratio < 0.4f), use_ik = !(ratio > 0.4f && ratio < 0.7f);
 			if (!use_ik)
 			{
+				const int num_sobol = (std::min)(num_ik, AGP_MAX_FULL_DIM - seed_count);
 				std::vector<float, boost::alignment::aligned_allocator<float, 32u>> temp_S(
-					static_cast<size_t>(AGP_MAX_GENERATED_SEEDS) * static_cast<size_t>(AGP_MAX_FULL_DIM), 0.0f);
-				int sobol_gen = generate_sobol_seeds(map, dim, temp_S.data(), 64, seed + static_cast<unsigned>(it), 64);
-				int num_sobol = num_ik;
+					static_cast<size_t>(num_sobol) * static_cast<size_t>(AGP_SEED_STRIDE), 0.0f);
+				int sobol_gen = generate_sobol_seeds(map, dim, temp_S.data(), AGP_SEED_STRIDE, seed + static_cast<unsigned>(it) + 7919u * static_cast<unsigned>(rank), num_sobol);
 				for (int kk = 0; kk < num_sobol && kk < sobol_gen && seed_count < AGP_MAX_FULL_DIM; ++kk)
 				{
 					const float* s = temp_S.data() + static_cast<size_t>(kk) * static_cast<size_t>(64);
@@ -5329,7 +5626,25 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			const float x1 = cur->x1, x2 = cur->x2, y1 = cur->y1, y2 = cur->y2;
 			const float m = r_eff * Mmax;
 			const float inv_m = 1.0f / m;
-			const float tBase = step(m, inv_m, x1, x2, y1, y2, static_cast<unsigned>(dim), r_eff, cur->idx1, cur->idx2);
+			float tBase;
+			switch (dim) {
+			case 1:  tBase = step<1>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 2:  tBase = step<2>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 3:  tBase = step<3>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 4:  tBase = step<4>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 5:  tBase = step<5>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 6:  tBase = step<6>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 7:  tBase = step<7>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 8:  tBase = step<8>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 9:  tBase = step<9>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 10: tBase = step<10>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 11: tBase = step<11>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 12: tBase = step<12>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 13: tBase = step<13>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 14: tBase = step<14>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			case 15: tBase = step<15>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			default: tBase = step<16>(m, inv_m, x1, x2, y1, y2, r_eff, cur->idx1, cur->idx2); break;
+			}
 			const TrialPoint trNew = evaluate_trial_from_t(tBase, x1, x2);
 			const unsigned long long mid_i = agp_t_to_firstchunk_idx_open(map, trNew.t);
 
@@ -5355,8 +5670,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				IntervalND* only = (static_cast<bool>(L)) ? L : Rv;
 				const float prevMmax = Mmax;
 				update_pockets_and_Mmax(only);
-				const float len = only->x2 - only->x1;
-				if (len > dmax) dmax = len;
 				if ((p > 0.7f && !(it % 3) && dmax < 0.7f) || p > 0.9f)
 				{
 					const float alpha = p * p;
@@ -5387,7 +5700,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 				update_pockets_and_Mmax(Rv);
 				const float len1 = trNew.t - x1;
 				const float len2 = x2 - trNew.t;
-				if (len1 + len2 > dmax)
+				if (len1 + len2 == dmax)
 				{
 					dmax = fmaxf(len1, len2);
 					for (auto* pI : H)
@@ -5426,9 +5739,6 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 			}
 		}
 
-		_mm_prefetch(reinterpret_cast<const char*>(H[0]), _MM_HINT_T0);
-		_mm_prefetch(reinterpret_cast<const char*>(H[1]), _MM_HINT_T0);
-
 		if (multi_start)
 		{
 			if ((stagnation || bestF < fmaf(fmaf(bestFOld, 0.6f, 0.0f), adaptive_coeff__, 0.0f)) && it - last_send_T >= send_interval_T)
@@ -5463,7 +5773,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 
 				const float alpha = 0.63f - sqrtf(fmaxf(fmaf(-p, 0.113f, 1.13f), 0.0f));
 				const float beta = 1.0f - alpha;
-				const float w_pos = fmaf(-sqrtf(fmaf(p, 0.007f, 1.0f)), 3.085f, 0.0f);
+				const float w_pos = -sqrtf(fmaf(p, 0.007f, 1.0f)) * 3.085f;
 				const float w_size = 5.085f - w_pos;
 				const int num_bins = (p < 1.0f - 1e-9f) ? static_cast<int>(1.0f / (1.0f - p)) : 1;
 
@@ -5511,7 +5821,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 					size_norm[idx] = fmaf(-inv_size_range, size_min, fmaf(inv_size_range, size_metric[idx], 0.0f));
 				}
 
-				const float inv_sqrt_wsum = 1.0f / sqrtf(w_pos + w_size);
+				const float inv_sqrt_wsum = _mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(w_pos + w_size)));
 
 				selected.emplace_back(0);
 				used[0] = 1u;
@@ -5535,7 +5845,7 @@ static __declspec(noalias) __forceinline void agp_run_branch_mpi(
 							if (d2 < min_dist) min_dist = d2;
 						}
 
-						const float score = fmaf(fmaf(sqrtf(min_dist), inv_sqrt_wsum, 0.0f), beta, fmaf(R_norm[idx], alpha, 0.0f));
+						const float score = fmaf(sqrtf(min_dist) * inv_sqrt_wsum, beta, R_norm[idx] * alpha);
 						if (score > best_score)
 						{
 							best_score = score;
@@ -6004,8 +6314,9 @@ void AgpStartManipND(
 	if (obstacleData) memcpy(p.obstacleData, obstacleData, static_cast<size_t>(obstacleCount) * 3ull * sizeof(float));
 	p.obstacleCount = obstacleCount;
 	p.mode = mode;
-	if (referenceStates) memcpy(p.referenceStates, referenceStates, (n << 1) * sizeof(float));
-	if (finalStates) memcpy(p.finalStates, finalStates, (n << 1) * sizeof(float));
+	const size_t total = static_cast<size_t>(n + (variableLengths ? n : 0));
+	if (referenceStates) memcpy(p.referenceStates, referenceStates, total * sizeof(float));
+	if (finalStates) memcpy(p.finalStates, finalStates, total * sizeof(float));
 	const int world = g_world->size();
 	int rank = 1;
 	while (rank < world)
@@ -6061,7 +6372,7 @@ static void build_trajectory(
 	TrajConfig endConfig;
 	ManipCost& tempCost = *reinterpret_cast<ManipCost*>(_tempCost);
 	endConfig.state = std::move(finalStateVec);
-	tempCost.compute_pose(endConfig.state.data(), endConfig.x, endConfig.y, endConfig.a, nullptr, nullptr);
+	tempCost.compute_pose(endConfig.state.data(), endConfig.x, endConfig.y, endConfig.a, nullptr, nullptr, nullptr, nullptr);
 	if constexpr (HasObstacles)
 	{
 		float px[AGP_MAX_LINK_POINTS], py[AGP_MAX_LINK_POINTS];
@@ -6113,7 +6424,7 @@ static void build_trajectory(
 				mid.state[i] = fmaf(diff, 0.5f, a.state[i]);
 				mid.state[n + i] = variableLengths ? fmaf(a.state[n + i], 0.5f, fmaf(b.state[n + i], 0.5f, 0.0f)) : baseLength;
 			}
-			tempCost.compute_pose(mid.state.data(), mid.x, mid.y, mid.a, nullptr, nullptr);
+			tempCost.compute_pose(mid.state.data(), mid.x, mid.y, mid.a, nullptr, nullptr, nullptr, nullptr);
 
 			float* midBestQ;
 			float midBestX, midBestY, midBestA, midBestF;
@@ -6310,12 +6621,6 @@ extern "C" __declspec(dllexport) void __cdecl AGP_BuildTransitionTrajectory(
 }
 
 extern "C" __declspec(dllexport) __declspec(noalias) __forceinline
-void AGP_Free(float* p) noexcept
-{
-	CoTaskMemFree(p);
-}
-
-extern "C" __declspec(dllexport) __declspec(noalias) __forceinline
 void AgpWaitStartAndRun() noexcept
 {
 	while (true)
@@ -6354,6 +6659,7 @@ void AgpWaitStartAndRun() noexcept
 					p.obstacleData, p.obstacleCount,
 					&q, &bx, &by, &ba, &bf, &oi, &oa,
 					p.mode, p.referenceStates);
+				CoTaskMemFree(q);
 			}
 		}
 		Sleep(0);
